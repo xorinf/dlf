@@ -1,0 +1,36 @@
+# Datasets — do not commit
+data/raw/
+data/processed/
+data/cache/
+data/Downloads/
+
+# Model checkpoints — store via external versioning, not git
+checkpoints/
+models/
+*.pt
+*.pth
+*.onnx
+*.tflite
+
+# Configs / secrets — never commit credentials
+.env
+.env.*
+*.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend (Phase 8)
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
