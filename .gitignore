@@ -26,6 +26,9 @@ venv/
 .pytest_cache/
 .mypy_cache/
 
+# Internal scratch / agent notes (local-only)
+.hermes/
+
 # Node / frontend (Phase 8)
 node_modules/
 frontend/dist/
@@ -34,3 +37,4 @@ frontend/.vite/
 # OS
 .DS_Store
 Thumbs.db
+data/metadata/preprocess_index.json

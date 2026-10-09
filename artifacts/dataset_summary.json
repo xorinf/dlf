@@ -1,0 +1,38 @@
+{
+  "splits_pinned_to": "AI4Bharat/INCLUDE master (data/metadata/)",
+  "n_records_total": 958,
+  "n_records_present": 22,
+  "n_records_missing": 936,
+  "bytes_present": 291663032,
+  "per_split_present": {
+    "train": 16,
+    "test": 4,
+    "val": 2
+  },
+  "per_category_present": {
+    "Seasons": 22
+  },
+  "n_distinct_classes_present": 2,
+  "orphan_rows_count": 15,
+  "orphan_rows_sample": [
+    "Adjectives/79. short/extra/MVI_5192.MOV",
+    "Adjectives/84. small little/extra/MVI_5209.MOV",
+    "Animals/4. Bird/Extra/MVI_3041.MOV",
+    "Animals/4. Bird/Extra/MVI_3042.MOV",
+    "Animals/4. Bird/Extra/MVI_3043.MOV",
+    "Animals/4. Bird/Extra/MVI_3044.MOV",
+    "Animals/4. Bird/Extra/MVI_3045.MOV",
+    "Places/19. House/Extra/MVI_3439.MOV",
+    "Places/23. Court/Extra/MVI_3288.MOV",
+    "Places/23. Court/Extra/MVI_3368.MOV",
+    "Places/23. Court/Extra/MVI_3613.MOV",
+    "Places/28. Store or Shop/Extra/MVI_3636.MOV",
+    "Places/28. Store or Shop/Extra/MVI_3637.MOV",
+    "Places/35. Bank/Extra/MVI_3339.MOV",
+    "Places/35. Bank/Extra/MVI_3420.MOV"
+  ],
+  "archives_on_disk": [
+    "Seasons_1of1.zip"
+  ],
+  "working_subset": "Seasons (1 archive: Seasons_1of1.zip)"
+}

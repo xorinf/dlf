@@ -1,130 +1,191 @@
 #!/usr/bin/env bash
 # Download the INCLUDE dataset (Sridhar et al., ACM MM 2020) from Zenodo.
 #
-# Default mode: INCLUDE-50 — small subset (~958 videos) for fast iteration.
-# --full mode  : the complete 4,292-video, 263-class dataset (~57 GB).
+# Modes:
+#   default      : INCLUDE-50 — full bundle (~46.7 GB compressed, ~93 GB disk).
+#                  Refuses to start when target disk is short.
+#   --subset     : smallest-archive subset for limited-disk envs (~5 GB compressed).
+#   --full       : mirror the entire dataset (~52.8 GB compressed, see docs/phase2.md).
+#   --categories "A B C"
+#                : explicit category list (subset of "Adjectives Animals Clothes
+#                  Colours Days_and_Time Electronics Greetings Home Jobs
+#                  Means_of_Transportation People Places Pronouns Seasons Society").
 #
-# The official train/test CSVs are NOT in this Zenodo record; we fetch them
-# separately from the Google Drive link the authors list on the dataset page.
-# Pass --no-splits to skip that step if you only want the videos.
+# In all modes the per-archive MD5 is checked after download. The download is
+# resumable (curl -C -) and survives transient HTTP errors (curl --retry).
 #
-# Notes:
-#  - These URLs intentionally use the canonical Zenodo /records/<id>/files/... path
-#    (verified against https://zenodo.org/records/4010759 on download).
-#  - Internet drops will leave the .zip file behind; the loop is idempotent — a
-#    partial .zip is reused on resume by wget -c.
+# Splits & label maps ship with this repo under data/metadata/ and are NOT
+# fetched here — see scripts/fetch_splits.sh. (Zenodo 4010759 does not contain
+# a Train_Test_Split.zip; using the AI4Bharat/INCLUDE GitHub copies is the
+# canonical, version-controlled path.)
 set -euo pipefail
 
 ZENODO_RECORD="4010759"
 BASE="https://zenodo.org/records/${ZENODO_RECORD}/files"
-TARGET_DIR="${INCLUDE_DIR:-$PWD/data/raw/include}"
+RAW_DIR="${INCLUDE_DIR:-$PWD/data/raw/include}"
+RAW_DIR="$(mkdir -p "$RAW_DIR" && cd "$RAW_DIR" && pwd -P)"   # resolve to absolute early
 MODE="include50"
-DOWNLOAD_SPLITS=1
-SPLITS_DRIVE_URL="https://drive.google.com/file/d/1tGjOR9xbk279ZUYnmk3BE-ktcWBdS24w/view?usp=sharing"
-SPLITS_OUT="Train_Test_Split.zip"  # filename the resulting archive is saved as
+EXPLICIT_CATEGORIES=""
 
 usage() {
+    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    echo
     cat <<EOF
-Usage: $0 [--full] [--out DIR] [--no-splits]
-  --full         Download every category archive (large disk usage, ~57 GB).
-                 Default: download only a curated INCLUDE-50 category bundle.
-  --out DIR      Destination directory (default: \$INCLUDE_DIR or ./data/raw/include).
-  --no-splits    Skip fetching the official train/test CSVs from Google Drive.
-  -h, --help     Show this help.
+
+Usage: $0 [--subset | --full | --categories "A B C"] [--out DIR]
+
+Defaults: --include50 (the full INCLUDE-50 category bundle).
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --full) MODE="full"; shift ;;
-        --out)  TARGET_DIR="${2:-}"; shift 2 ;;
-        --no-splits) DOWNLOAD_SPLITS=0; shift ;;
+        --subset)  MODE="subset"; shift ;;
+        --include50) MODE="include50"; shift ;;
+        --full)    MODE="full"; shift ;;
+        --categories) MODE="categories"; EXPLICIT_CATEGORIES="${2:-}"; shift 2 ;;
+        --out)     RAW_DIR="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
     esac
 done
 
-mkdir -p "$TARGET_DIR"
-cd "$TARGET_DIR"
+mkdir -p "$RAW_DIR"
+cd "$RAW_DIR"
+# Authoritative archive list (name, category, MD5, bytes) is fetched live from
+# Zenodo's JSON API rather than hardcoded — keeps the script honest if Zenodo
+# rotates or adds parts.
+ARCHIVE_INDEX="$(mktemp -t include_index.XXXXXX.json)"
+trap 'rm -f "$ARCHIVE_INDEX"' EXIT
+curl -fsSL "https://zenodo.org/api/records/${ZENODO_RECORD}" -o "$ARCHIVE_INDEX"
 
-needed=()
+python3 - "$ARCHIVE_INDEX" "$MODE" "$EXPLICIT_CATEGORIES" > archives.list <<'PY'
+import json, sys, os, re
+idx_path, mode, explicit = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.load(open(idx_path))
+# Build {category: [archive_entries]}
+by_cat = {}
+for f in data["files"]:
+    name = f["key"]
+    if not name.endswith(".zip"): continue
+    # Filename pattern: "<Cat>_<i>of<n>.zip"  where Cat has underscores (e.g. Days_and_Time_1of3.zip)
+    m = re.match(r"^(.+)_(\d+)of(\d+)\.zip$", name)
+    if not m: continue
+    cat, i, n = m.group(1), int(m.group(2)), int(m.group(3))
+    md5 = f.get("checksum","").split(":")[-1]
+    by_cat.setdefault(cat, []).append((name, int(f["size"]), md5))
 
-# INCLUDE-50 category bundle — keep this list honest, do not expand silently.
-# (Sourced from the dataset README on Zenodo.)
-case "$MODE" in
-    include50)
-        needed+=(
-            "Greetings_1of2.zip"  "Greetings_2of2.zip"
-            "Pronouns_1of2.zip"  "Pronouns_2of2.zip"
-            "Colours_1of2.zip"   "Colours_2of2.zip"
-            "Animals_1of2.zip"   "Animals_2of2.zip"
-            "Days_and_Time_1of3.zip" "Days_and_Time_2of3.zip" "Days_and_Time_3of3.zip"
-            "Adjectives_1of8.zip"
-            "Seasons_1of1.zip"
-        )
-        ;;
-    full)
-        # Mirror every category archive (one wget per part). Order is irrelevant;
-        # content is namespaced by category folder after extraction.
-        declare -a cats=(
-            "Adjectives:8"
-            "Animals:2"
-            "Clothes:2"
-            "Colours:2"
-            "Days_and_Time:3"
-            "Electronics:2"
-            "Greetings:2"
-            "Home:4"
-            "Jobs:2"
-            "Means_of_Transportation:2"
-            "People:5"
-            "Places:4"
-            "Pronouns:2"
-            "Seasons:1"
-            "Society:3"
-        )
-        for c in "${cats[@]}"; do
-            name="${c%:*}"; n="${c#*:}"
-            for ((i=1; i<=n; i++)); do
-                needed+=("${name}_${i}of${n}.zip")
-            done
-        done
-        ;;
-esac
+# Authoritative order for full sets. "subset" picks the smallest categories.
+FULL_ORDER = [
+    "Adjectives","Animals","Clothes","Colours","Days_and_Time",
+    "Electronics","Greetings","Home","Jobs",
+    "Means_of_Transportation","People","Places","Pronouns",
+    "Seasons","Society",
+]
+# Subset = smallest archives first until disk-plausible.
+SUBSET_CATS = ["Seasons", "Electronics", "Pronouns"]  # ~5 GB compressed, ~10 GB disk
 
-echo ">> Mode: $MODE"
-echo ">> Target: $TARGET_DIR"
-echo ">> ${#needed[@]} archive(s) planned."
+def emit(names_and_meta):
+    for name, size, md5 in sorted(names_and_meta):
+        print(f"{name}\t{size}\t{md5}")
+
+if mode == "full":
+    for c in FULL_ORDER:
+        emit(by_cat.get(c, []))
+elif mode == "include50":
+    for c in FULL_ORDER:
+        emit(by_cat.get(c, []))
+elif mode == "subset":
+    for c in SUBSET_CATS:
+        emit(by_cat.get(c, []))
+elif mode == "categories":
+    pick = set(explicit.split())
+    for c in FULL_ORDER:
+        if c in pick:
+            emit(by_cat.get(c, []))
+else:
+    sys.stderr.write(f"unknown mode: {mode}\n"); sys.exit(2)
+PY
+
+needed_files=()
+needed_bytes=0
+while IFS=$'\t' read -r fname fsize fmd5; do
+    [[ -z "$fname" ]] && continue
+    needed_files+=("$fname")
+    needed_bytes=$((needed_bytes + fsize))
+done < archives.list
+
+human_size() {  # bytes -> "X.X GB" / "X.X MB" — BSD awk safe on macOS.
+    local bytes="$1"
+    if (( bytes >= 1073741824 )); then
+        awk -v b="$bytes" 'BEGIN{printf "%.2f GB", b/1073741824}'
+    else
+        awk -v b="$bytes" 'BEGIN{printf "%.0f MB", b/1048576}'
+    fi
+}
+
+echo "Mode: $MODE"
+echo "Raw dir: $RAW_DIR"
+echo "Archives planned: ${#needed_files[@]} (compressed bytes: $(human_size "$needed_bytes"))"
 echo
 
-for f in "${needed[@]}"; do
-    if [[ -s "$f" && -f "$f" ]]; then
-        echo "SKIP $f (already present)"
-        continue
-    fi
-    echo "GET  $f"
-    wget -c --tries=5 --retry-connrefused -q --show-progress "$BASE/$f?download=1" -O "$f"
-done
+# Disk preflight (zips + extracted ≈ 2× compressed).
+NEED=$((needed_bytes * 2))
+AVAIL_KB=$(df -k "$RAW_DIR" | tail -1 | awk '{print $4}')
+AVAIL=$((AVAIL_KB * 1024))
+if (( AVAIL < NEED )); then
+    echo "ERROR: not enough free space." >&2
+    echo "  need=$(human_size "$NEED")" >&2
+    echo "  have=$(human_size "$AVAIL")" >&2
+    echo "  free up disk, or re-run with --categories 'Seasons' for the smallest possible subset." >&2
+    exit 3
+fi
 
-if [[ "$DOWNLOAD_SPLITS" == "1" ]]; then
-    if [[ -s "$SPLITS_OUT" ]]; then
-        echo "SKIP $SPLITS_OUT (already present)"
-    else
-        # Try gdown first (handles Drive confirm tokens properly). If unavailable
-        # we print the URL so the user can fetch it once manually.
-        echo "GET  Train/Test CSVs from Google Drive"
-        if command -v gdown >/dev/null 2>&1; then
-            gdown --fuzzy "$SPLITS_DRIVE_URL" -O "$SPLITS_OUT"
-        elif python3 -c "import gdown" 2>/dev/null; then
-            python3 -m gdown --fuzzy "$SPLITS_DRIVE_URL" -O "$SPLITS_OUT"
+fetch_one() {
+    local fname="$1" fsize="$2" fmd5="$3"
+    local final="$RAW_DIR/$fname"
+    local part="$RAW_DIR/$fname.part"
+
+    if [[ -s "$final" ]]; then
+        local got; got=$(md5 -q "$final" 2>/dev/null || md5sum "$final" | awk '{print $1}')
+        if [[ "$got" == "$fmd5" ]]; then
+            echo "OK    $fname (md5 match)"
+            return 0
         else
-            echo "NOTE: gdown not installed. Fetch this manually and place as $SPLITS_OUT:"
-            echo "      $SPLITS_DRIVE_URL"
-            echo "      pip install gdown ; gdown --fuzzy '${SPLITS_DRIVE_URL}' -O '$SPLITS_OUT'"
+            echo "RETRY $fname (md5 mismatch: got $got != $fmd5)"
+            rm -f "$final"
         fi
     fi
+
+    echo "GET   $fname  ($(human_size "$fsize"))"
+    # Resumable, quiet-but-with-progress, broad retry envelope.
+    curl -C - --retry 20 --retry-delay 4 --retry-all-errors --connect-timeout 30 \
+        --max-time 7200 -sSL --show-error \
+        "$BASE/$fname?download=1" -o "$part"
+    mv "$part" "$final"
+
+    local got; got=$(md5 -q "$final" 2>/dev/null || md5sum "$final" | awk '{print $1}')
+    if [[ "$got" != "$fmd5" ]]; then
+        echo "FAIL  $fname md5 mismatch (got $got expected $fmd5)" >&2
+        return 1
+    fi
+    echo "OK    $fname"
+}
+
+# Run fetches serially — concurrent downloads aren't worth the bandwidth thrash
+# against Zenodo's rate limiting on a single connection.
+fail=0
+while IFS=$'\t' read -r fname fsize fmd5; do
+    [[ -z "$fname" ]] && continue
+    fetch_one "$fname" "$fsize" "$fmd5" || fail=$((fail + 1))
+done < archives.list
+
+if (( fail > 0 )); then
+    echo "" >&2
+    echo "$fail archive(s) failed. Re-run to resume; partial files kept as .part." >&2
+    exit 4
 fi
 
 echo
-echo ">> Done. To extract, run:"
-echo "   unzip -n '$TARGET_DIR'/*.zip -d '$TARGET_DIR'"
+echo "All ${#needed_files[@]} archive(s) downloaded and integrity-verified."
+echo "Next: bash scripts/extract_include.sh        # unzip into $RAW_DIR/<Category>/<word>/"
