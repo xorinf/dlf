@@ -1,0 +1,10 @@
+{
+  "n_train": 16,
+  "n_val": 2,
+  "n_test": 4,
+  "n_classes": 2,
+  "class_names": [
+    "fall",
+    "summer"
+  ]
+}

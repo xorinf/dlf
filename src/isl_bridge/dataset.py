@@ -59,15 +59,15 @@ def _scan_disk(raw_dir: Path) -> dict[str, Path]:
     return found
 
 
-def _load_split_files() -> dict[str, set[str]]:
+def _load_split_files(meta_dir: Path | None = None) -> dict[str, set[str]]:
     """Return {split_name: set(relpath)} for INCLUDE-50."""
     out: dict[str, set[str]] = {}
-    for split, fp in dataset_meta.split_paths("include50").items():
+    for split, fp in dataset_meta.split_paths("include50", meta_dir=meta_dir).items():
         out[split] = {ln.strip() for ln in fp.read_text().splitlines() if ln.strip()}
     return out
 
 
-def build_inventory(raw_dir: Path, *, also_label_map: bool = True) -> list[ClipRecord]:
+def build_inventory(raw_dir: Path, *, meta_dir: Path | None = None) -> list[ClipRecord]:
     """List every clip that *should* exist according to INCLUDE-50 splits,
     mark which are present in raw_dir, which are missing, and which are
     zero-byte/corrupted.
@@ -77,18 +77,20 @@ def build_inventory(raw_dir: Path, *, also_label_map: bool = True) -> list[ClipR
     *the project's working subset* looks like rather than counting random
     other-Junk on disk.
 
+    `meta_dir` overrides the default data/metadata location for tests.
+
     Rows whose word-segment cannot be matched to a known INCLUDE-50 label are
     flagged with `unmatched=True` and counted separately in summary(). They
     are still kept in the inventory so an upstream data error is surfaced
     rather than hidden. Today the AI4Bharat splits contain one such row
     ("Adjectives/79. short/extra/MVI_5192.MOV") — logged at import time.
     """
-    splits = _load_split_files()
+    splits = _load_split_files(meta_dir=meta_dir)
     rel_to_split = {rel: name for name, rels in splits.items() for rel in rels}
 
     on_disk = _scan_disk(raw_dir)
     out: list[ClipRecord] = []
-    label_map = dataset_meta.load_label_map("include50")
+    label_map = dataset_meta.load_label_map("include50", meta_dir=meta_dir)
     n_unmatched = 0
     for rel, sp in sorted(rel_to_split.items()):
         p = on_disk.get(rel)
@@ -125,9 +127,12 @@ def build_inventory(raw_dir: Path, *, also_label_map: bool = True) -> list[ClipR
             expected_split=sp,
         ))
     if n_unmatched:
-        print(f"WARNING: {n_unmatched} INCLUDE-50 row(s) have a word segment "
-              f"that doesn't match the canonical label_map. See summary()['unmatched_rows'].",
-              file=sys.stderr)
+        # Idempotent warning: print once per process. Multiple dataset / model
+        # code paths build the inventory; we only want the user to see one.
+        from isl_bridge import _once
+        _once.warn(f"isl_bridge.dataset: {n_unmatched} INCLUDE-50 row(s) "
+                   f"have a word segment that doesn't match the canonical "
+                   f"label_map. See artifacts/dataset_summary.json for the list.")
     return out
 
 

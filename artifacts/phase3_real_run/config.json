@@ -1,0 +1,15 @@
+{
+  "model_config": {
+    "backbone": "mobilenet_v2",
+    "num_classes": 2,
+    "pretrained": true,
+    "freeze_backbone": true,
+    "dropout": 0.2
+  },
+  "lr": 0.001,
+  "batch_size": 4,
+  "epochs": 4,
+  "seed": 0,
+  "device": "cpu",
+  "elapsed_sec": 117.78
+}

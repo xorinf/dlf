@@ -27,9 +27,9 @@ where the dataset supports it.
 
 | #  | Phase                                | Status   | Notes                                                                  |
 |----|--------------------------------------|----------|------------------------------------------------------------------------|
-| 1  | Research & project design            | **current** | Dataset, scope, architecture, evaluation plan. See `docs/phase1.md`. |
-| 2  | Dataset preparation                  | pending  | INCLUDE downloader, EDA, splits, augmentation.                          |
-| 3  | CNN baseline                         | pending  | MobileNetV2 / ResNet18 frame-level baseline.                            |
+| 1  | Research & project design            | done       | Dataset, scope, architecture, evaluation plan. See `docs/phase1.md`. |
+| 2  | Dataset preparation                  | done       | INCLUDE downloader, EDA, splits, preprocessing. `docs/phase2.md`. |
+| 3  | CNN baseline                         | **current** | MobileNetV2 backbone; pipeline-completeness only on Phase-2 working subset; synthetic fixture for honest end-to-end checks. `docs/phase3.md`. |
 | 4  | Spatiotemporal model                 | pending  | CNN backbone + GRU/BiLSTM; optional MediaPipe landmarks.               |
 | 5  | Improvement & robustness             | pending  | Augmentation, class imbalance, calibration, ablations.                  |
 | 6  | Real-time recognition                | pending  | Webcam capture, sliding window, smoothing, latency.                     |
@@ -37,6 +37,13 @@ where the dataset supports it.
 | 8  | Application development              | pending  | FastAPI backend + React/Tailwind frontend.                              |
 | 9  | Testing & evaluation                 | pending  | Confusion matrix, signer-independence, FPS, model size.                 |
 | 10 | Deployment & final submission        | pending  | README, repo, demo, report.                                             |
+
+> Phase 3 deliberately does not claim recognition accuracy: the on-disk
+> working subset is 22 clips across 2 classes (Summer, Fall) — too small for
+> a meaningful number. See `docs/phase3.md` § "Real-data run" for the actual
+> numbers and the explicit warning we print at run time. The hard requirement
+> for a real Phase-3 evaluation is the full INCLUDE-50 subset (~46.7 GB
+> compressed), which fits on this machine only after the disk frees up.
 
 Phases are unlocked sequentially — the gate before each phase is verified before
 the next begins (see `docs/phase1.md` § "Gates").

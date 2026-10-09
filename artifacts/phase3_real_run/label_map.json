@@ -1,0 +1,14 @@
+{
+  "new_to_orig_idx": {
+    "0": 14,
+    "1": 40
+  },
+  "orig_to_new_idx": {
+    "14": 0,
+    "40": 1
+  },
+  "idx_to_class": {
+    "0": "fall",
+    "1": "summer"
+  }
+}

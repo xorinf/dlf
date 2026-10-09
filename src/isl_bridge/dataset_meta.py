@@ -35,12 +35,14 @@ SPLIT_FILES = {
 }
 
 
-def load_label_map(variant: str = "include50") -> dict[str, int]:
+def load_label_map(variant: str = "include50", *, meta_dir: Path | None = None) -> dict[str, int]:
     """Return {class_name: integer_id}.
 
     Variants: 'include' (263 classes), 'include50' (50 classes).
+
+    `meta_dir` overrides the default data/metadata location for tests.
     """
-    fp = META_DIR / Path(LABEL_FILES[variant]).name
+    fp = (meta_dir or META_DIR) / Path(LABEL_FILES[variant]).name
     if not fp.exists():
         raise FileNotFoundError(
             f"label map for {variant!r} missing at {fp}. "
@@ -49,11 +51,12 @@ def load_label_map(variant: str = "include50") -> dict[str, int]:
     return {k: int(v) for k, v in json.loads(fp.read_text()).items()}
 
 
-def split_paths(variant: str) -> dict[str, Path]:
+def split_paths(variant: str, *, meta_dir: Path | None = None) -> dict[str, Path]:
     """Return {'train': ..., 'val': ..., 'test': ...} as Path to local copies."""
     files = SPLIT_FILES[variant]
+    base = meta_dir or META_DIR
     return {
-        "train": META_DIR / Path(files[0]).name,
-        "val":   META_DIR / Path(files[1]).name,
-        "test":  META_DIR / Path(files[2]).name,
+        "train": base / Path(files[0]).name,
+        "val":   base / Path(files[1]).name,
+        "test":  base / Path(files[2]).name,
     }
