@@ -1,0 +1,27 @@
+{
+  "model": "stemporal_gru",
+  "split": "test",
+  "metrics": {
+    "macro_precision": 0.25,
+    "macro_recall": 0.5,
+    "macro_f1": 0.3333,
+    "per_class": [
+      {
+        "class": 0,
+        "support": 2,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      {
+        "class": 1,
+        "support": 2,
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6667
+      }
+    ],
+    "accuracy": 0.5,
+    "n_eval": 4
+  }
+}
