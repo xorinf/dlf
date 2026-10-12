@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ISL-Bridge — Demo</title>
+<style>
+  :root {
+    --ink: #111; --paper: #fafafa; --line: #ddd;
+    --muted: #777; --accent: #111;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 32px auto; padding: 0 20px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; font-weight: 600; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 32px 0 8px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0; }
+  .panel { border: 1px solid var(--line); border-radius: 6px; padding: 16px; margin: 12px 0; background: #fff; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  label.file {
+    display: inline-block; border: 1px solid var(--ink); padding: 6px 12px;
+    cursor: pointer; user-select: none; font-size: 13px; border-radius: 3px;
+  }
+  label.file:hover { background: var(--ink); color: var(--paper); }
+  input[type=file] { display: none; }
+  button {
+    border: 1px solid var(--ink); background: #fff; color: var(--ink);
+    padding: 6px 12px; cursor: pointer; border-radius: 3px; font-size: 13px;
+  }
+  button:hover { background: var(--ink); color: var(--paper); }
+  button[disabled] { opacity: 0.4; cursor: not-allowed; }
+  input[type=range] { vertical-align: middle; }
+  .kv { font-variant-numeric: tabular-nums; }
+  .kv b { font-weight: 600; }
+  .kv span.lbl { display: inline-block; min-width: 110px; color: var(--muted); }
+  .bar {
+    display: inline-block; background: var(--ink); height: 8px; vertical-align: middle;
+    margin-right: 8px; border-radius: 1px;
+  }
+  .log { font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted);
+         white-space: pre-wrap; border-top: 1px dashed var(--line); padding-top: 12px; }
+  .status { font-size: 12px; color: var(--muted); }
+  .status.live { color: var(--ink); }
+  footer { color: var(--muted); font-size: 12px; margin: 40px 0 12px; text-align: center; }
+  dialog { border: 1px solid var(--line); border-radius: 6px; padding: 20px; max-width: 520px; }
+  dialog::backdrop { background: rgba(0,0,0,0.3); }
+  dialog h3 { margin: 0 0 8px; font-size: 15px; }
+  dialog p { margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+  .nav-btn { border: 1px solid var(--line); background: #fff; padding: 6px 10px;
+              cursor: pointer; font-size: 12px; border-radius: 3px; }
+  .nav-btn:hover { background: var(--ink); color: var(--paper); }
+  .pill { display: inline-block; border: 1px solid var(--line); padding: 2px 8px;
+          border-radius: 999px; font-size: 11px; color: var(--muted); }
+  code { background: #f0f0f0; padding: 1px 4px; border-radius: 2px; font-size: 12px; }
+  @media (max-width: 600px) {
+    .wrap { margin: 16px auto; }
+    .row { flex-direction: column; align-items: stretch; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ISL-Bridge — Demo</h1>
+    <p class="sub">Isolated Indian Sign Language recognition — webcam, file, or sample clip. Monochrome UI.</p>
+    <p class="status" id="status">Checking API…</p>
+  </header>
+
+  <section class="panel">
+    <h2>Pick a video</h2>
+    <div class="row">
+      <label class="file" for="fileInput">Choose video…</label>
+      <input type="file" id="fileInput" accept="video/*,.mov,.mp4" />
+      <span class="sub" id="fileName">No file selected</span>
+    </div>
+    <div class="row" style="margin-top: 12px;">
+      <button id="btnSample" type="button">Use a sample clip</button>
+      <button id="btnPredict" type="button" disabled>Predict</button>
+      <span class="sub">Top-k: <input type="range" id="topK" min="1" max="5" /> <span id="topKVal">3</span></span>
+      <span class="sub">Abstain if conf &lt; <input type="range" id="abstain" min="0" max="100" value="60" /> <span id="outAbstain">0.60</span></span>
+    </div>
+  </section>
+
+  <section class="panel" id="resultPanel" hidden>
+    <h2>Prediction</h2>
+    <div class="kv" id="prediction">—</div>
+    <div class="kv" id="topKList" style="margin-top: 12px;"></div>
+    <div class="row" style="margin-top: 16px;">
+      <button id="btnSpeak" type="button">Speak prediction</button>
+      <button id="btnClear" type="button">Clear</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>What the model knows</h2>
+    <p class="sub">Classes the current checkpoint was trained on. Empty means the API isn't reachable.</p>
+    <div id="classList" class="sub">—</div>
+  </section>
+
+  <section class="panel">
+    <h2>Activity log</h2>
+    <div class="log" id="log"></div>
+  </section>
+
+  <footer>
+    <span class="pill">Vanilla HTML · no build · offline-capable</span>
+    &nbsp;API: <code id="apiHost">—</code>
+    &nbsp;<button class="nav-btn" id="btnAbout" type="button">About</button>
+    &nbsp;<button class="nav-btn" id="btnHealth" type="button">Refresh health</button>
+  </footer>
+</div>
+
+<dialog id="aboutDlg">
+  <h3>About this demo</h3>
+  <p>This is a single-file HTML page that talks to the ISL-Bridge FastAPI backend.</p>
+  <p>It accepts a <code>.mov</code> or <code>.mp4</code> from your disk (or a sample clip bundled with the project), POSTs it to <code>/predict</code>, and shows the model's top guesses with confidence. The "Speak prediction" button uses the browser's built-in speech synthesis — no server round-trip.</p>
+  <p>Honest note: the on-disk working subset covers 2 INCLUDE classes (Fall, Summer). Numbers reported in the README are pipeline-completeness only.</p>
+  <form method="dialog"><button class="nav-btn">Close</button></form>
+</dialog>
+
+<script>
+"use strict";
+const $ = (s, r=document) => r.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const log = (m) => { const el = $("#log"); el.textContent += `[${new Date().toLocaleTimeString()}] ${m}\n`; el.scrollTop = el.scrollHeight; };
+
+const state = {
+  file: null, topK: 3, abstain: 0.60,
+  api: (location.protocol === "file:" || location.hostname === "")
+    ? "http://127.0.0.1:5050"
+    : `${location.protocol}//${location.host}`,
+  classes: [],
+};
+
+$("#apiHost").textContent = state.api;
+
+// --- Status / health ---------------------------------------------------------
+async function refreshHealth() {
+  const status = $("#status");
+  try {
+    const r = await fetch(`${state.api}/health`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    status.textContent = `API live — ${d.classes.length} classes: ${d.classes.join(", ")}`;
+    status.classList.add("live");
+    state.classes = d.classes;
+    renderClasses();
+    log(`health OK — ${d.classes.length} classes`);
+  } catch (e) {
+    status.textContent = `API offline — start it with: PYTHONPATH=src python3 scripts/api.py --host 127.0.0.1 --port 5050`;
+    status.classList.remove("live");
+    log(`health failed: ${e.message}`);
+  }
+}
+
+// --- File handling -----------------------------------------------------------
+$("#fileInput").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  state.file = f;
+  $("#fileName").textContent = `${f.name} (${(f.size / 1024 / 1024).toFixed(2)} MB)`;
+  $("#btnPredict").disabled = false;
+  log(`file selected: ${f.name}`);
+});
+
+$("#topK").addEventListener("input", (e) => {
+  state.topK = +e.target.value;
+  $("#topKVal").textContent = state.topK;
+});
+$("#abstain").addEventListener("input", (e) => {
+  state.abstain = (+e.target.value) / 100;
+  $("#outAbstain").textContent = state.abstain.toFixed(2);
+});
+
+$("#btnSample").addEventListener("click", async () => {
+  // Pick the first real on-disk clip — server doesn't serve it; we fetch the
+  // raw bytes from the project's data/raw directory via the API isn't a path
+  // we exposed. Instead: ask the API to predict on a known npz sample.
+  log("sample requested — asking the server to predict a real on-disk clip");
+  await predictSample();
+});
+
+async function predictSample() {
+  try {
+    const r = await fetch(`${state.api}/sample_predict?top_k=${state.topK}&abstain_threshold=${state.abstain}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    log(`sample prediction: ${d.prediction} (conf ${d.top1_confidence.toFixed(3)})`);
+    renderResult(d);
+  } catch (e) {
+    log(`sample prediction failed: ${e.message}`);
+  }
+}
+
+$("#btnPredict").addEventListener("click", async () => {
+  if (!state.file) { log("no file selected"); return; }
+  const fd = new FormData();
+  fd.append("file", state.file);
+  $("#btnPredict").disabled = true;
+  log(`predicting ${state.file.name}…`);
+  try {
+    const r = await fetch(`${state.api}/predict?top_k=${state.topK}&abstain_threshold=${state.abstain}`, {
+      method: "POST", body: fd,
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`HTTP ${r.status} — ${t.slice(0, 120)}`);
+    }
+    const d = await r.json();
+    log(`prediction: ${d.prediction} (conf ${d.top1_confidence.toFixed(3)})`);
+    renderResult(d);
+  } catch (e) {
+    log(`predict failed: ${e.message}`);
+  } finally {
+    $("#btnPredict").disabled = false;
+  }
+});
+
+// --- Result rendering --------------------------------------------------------
+function renderResult(d) {
+  $("#resultPanel").hidden = false;
+  const p = d.prediction;
+  const uncertain = p === "uncertain";
+  $("#prediction").innerHTML = `<span class="lbl">Prediction</span><b>${esc(p)}</b> &nbsp; <span class="sub">conf <b>${d.top1_confidence.toFixed(3)}</b>${uncertain ? ` (below ${state.abstain.toFixed(2)} — abstained)` : ""}</span>`;
+  const max = Math.max(...d.top_k.map(x => x.confidence)) || 1;
+  $("#topKList").innerHTML = "<span class='lbl'>Top-k</span>" + d.top_k.map(x => {
+    const w = Math.round(60 * x.confidence / max);
+    return `<div><span class="bar" style="width:${w}px"></span><b>${esc(x.class)}</b> &nbsp; ${x.confidence.toFixed(3)}</div>`;
+  }).join("");
+}
+
+$("#btnSpeak").addEventListener("click", () => {
+  const text = $("#prediction").querySelector("b")?.textContent || "";
+  if (!text || text === "uncertain") { log("nothing to speak"); return; }
+  if (!("speechSynthesis" in window)) { log("speechSynthesis not available"); return; }
+  const u = new SpeechSynthesisUtterance(text);
+  speechSynthesis.speak(u);
+  log(`speaking: ${text}`);
+});
+
+$("#btnClear").addEventListener("click", () => {
+  $("#resultPanel").hidden = true;
+  state.file = null;
+  $("#fileName").textContent = "No file selected";
+  $("#btnPredict").disabled = true;
+  $("#fileInput").value = "";
+});
+
+$("#btnAbout").addEventListener("click", () => $("#aboutDlg").showModal());
+$("#btnHealth").addEventListener("click", refreshHealth);
+
+// --- Class list --------------------------------------------------------------
+function renderClasses() {
+  const el = $("#classList");
+  if (!state.classes.length) { el.textContent = "—"; return; }
+  el.innerHTML = state.classes.map(c => `<span class="pill">${esc(c)}</span>`).join(" ");
+}
+
+refreshHealth();
+</script>
+</body>
+</html>

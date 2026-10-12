@@ -18,9 +18,12 @@ the on-disk subset, with honest, documented numbers.
 | A per-class histogram                         | `artifacts/figures/class_histogram.png`                                | shows the 2-class on-disk reality     |
 | Per-epoch training history                    | `artifacts/phase3_real_run/history.json`, `…/phase4_real_run/…`        | 4 epochs each                         |
 | Evaluation JSON with macro-P/R/F1 and accuracy | `artifacts/phase3_real_run/evaluation.json`, `…/phase4_real_run/…`    | computed on the real (tiny) test set  |
-| A FastAPI server                              | `scripts/api.py`                                                       | serves `/health`, `/classes`, `/predict` |
+| A FastAPI server                              | `scripts/api.py`                                                       | serves `/health`, `/classes`, `/predict`, `/sample_predict` |
+| A demo website                                | `web/index.html`                                                       | single-file HTML, monochrome, talks to the API |
 | A webcam capture loop                          | `scripts/webcam_demo.py`                                               | opens default webcam, emits top-k     |
 | A TTS hook                                    | `src/isl_bridge/tts.py`                                                 | `say` on macOS, no-op elsewhere       |
+| A research write-up                            | `docs/RESEARCH.md`                                                     | hypotheses, ablation table, methodology |
+| An audit script + report                      | `scripts/audit.py`, `artifacts/audit/audit_report.json`, `docs/AUDIT.md` | data / model / latency / robustness / API smells / pyflakes |
 
 ## TL;DR — what the project is
 
@@ -205,17 +208,29 @@ $ curl -s -X POST \
     {"class": "summer", "confidence": 0.4916}
   ]
 }
+
+$ curl -s "http://127.0.0.1:5050/sample_predict?top_k=3&abstain_threshold=0.6"
+{
+  "prediction": "uncertain",
+  "top1_confidence": 0.5064,
+  "top_k": [
+    {"class": "fall",   "confidence": 0.5064},
+    {"class": "summer", "confidence": 0.4936}
+  ]
+}
 ```
 
-Three endpoints:
+Four endpoints:
 * `GET /health` — model status + class names.
 * `GET /classes` — full `{idx: name}` map.
 * `POST /predict` — multipart `file=…` (video), query params `top_k`,
   `abstain_threshold`.
+* `GET /sample_predict` — runs the model on the first `data/processed/test`
+  npz, returns the same shape as `/predict`. Used by the demo website when
+  the user hasn't picked a file.
 
 A React/Tailwind frontend that consumes this API is **out of scope** for
-this repo — it would be a separate stack. The API is small enough that
-any HTTP client (curl, browser, mobile) can drive it.
+this repo — the demo is a single-file HTML page instead (see below).
 
 ### Phase 9 — Evaluation & reporting
 
@@ -228,9 +243,42 @@ Every training run drops:
 
 `scripts/plot_confusion.py` regenerates the PNG from any `evaluation.json`.
 
+The project-wide audit (`scripts/audit.py`) covers data, model, latency,
+robustness, API smells, and a lightweight lint pass — full write-up in
+`docs/AUDIT.md`, raw report in `artifacts/audit/audit_report.json`.
+
 > Signer-independent evaluation is *not* claimed. INCLUDE's public CSVs
 > don't carry per-clip signer IDs; we say so rather than fabricate a
 > number (see `docs/phase1.md` and `docs/phase2.md`).
+
+### Demo — single-file HTML website
+
+`web/index.html` is a vanilla single-file HTML page that talks to the
+FastAPI backend. No npm, no bundler, no dependencies. Monochrome UI by
+default per the project style.
+
+```bash
+# 1. Start the API.
+PYTHONPATH=src python3 scripts/api.py \
+    --checkpoint artifacts/phase3_real_run/best.pt \
+    --host 127.0.0.1 --port 5050
+
+# 2. Open the demo.
+open web/index.html       # or: just double-click web/index.html
+```
+
+What it does:
+* Polls `/health` and shows the model's known classes (or "API offline").
+* Lets the user pick a `.mov` / `.mp4` from disk, then POSTs it to
+  `/predict` and renders the top-k predictions as bars.
+* "Use a sample clip" calls `/sample_predict` so the demo is interactive
+  even when the user doesn't have a video file at hand.
+* "Speak prediction" uses the browser's built-in `speechSynthesis` (no
+  server round-trip).
+* Adjustable top-k and abstention threshold.
+
+The website has zero deps and runs offline (it only needs the API to be
+reachable on `127.0.0.1:5050`).
 
 ### Phase 10 — Deployment
 
@@ -259,6 +307,8 @@ This README + the GitHub repo is the deliverable. To deploy:
 │   ├── phase1.md                      ← dataset decision + experiment plan
 │   ├── phase2.md                      ← downloader, splits, preprocessing
 │   ├── phase3.md                      ← CNN baseline design + numbers
+│   ├── RESEARCH.md                    ← hypotheses, ablation table, methodology
+│   ├── AUDIT.md                       ← audit script reference + last run
 │   └── dataset_README.md              ← INCLUDE-50 reference
 ├── src/isl_bridge/
 │   ├── config.py                      ← paths, env overrides
@@ -282,9 +332,12 @@ This README + the GitHub repo is the deliverable. To deploy:
 │   ├── infer_cnn.py                   ← CLI: predict one clip
 │   ├── webcam_demo.py                 ← Phase 6 webcam loop
 │   ├── api.py                         ← Phase 8 FastAPI server
+│   ├── audit.py                       ← project-wide audit runner
 │   ├── plot_confusion.py              ← Phase 9 confusion-matrix PNG
 │   ├── make_figures.py                ← dataset visualisations
 │   └── write_dataset_summary.py       ← dataset inventory JSON
+├── web/
+│   └── index.html                     ← single-file demo website (no build)
 ├── data/                              ← not committed (see .gitignore)
 │   ├── raw/include/                   ← extracted videos
 │   ├── processed/                     ← npz cache
@@ -293,6 +346,7 @@ This README + the GitHub repo is the deliverable. To deploy:
 ├── artifacts/
 │   ├── phase3_real_run/               ← CNN baseline run
 │   ├── phase4_real_run/               ← GRU run
+│   ├── audit/                         ← audit_report.json
 │   ├── figures/                       ← dataset visualisations
 │   └── dataset_summary.json
 └── tests/                             ← pytest, 11 tests, all green on CPU
@@ -311,16 +365,22 @@ PYTHONPATH=src python3 scripts/infer_cnn.py \
     --video "data/raw/include/Seasons/61. Summer/MVI_4568.MOV"
 # → {"prediction": "fall", "top1_confidence": 0.5084, "top_k": [...]}
 
-# 3. Start the API.
+# 3. Start the API + open the demo website.
 PYTHONPATH=src python3 scripts/api.py \
     --checkpoint artifacts/phase3_real_run/best.pt \
-    --host 127.0.0.1 --port 5050
+    --host 127.0.0.1 --port 5050 &
+open web/index.html        # macOS; xdg-open on Linux
 
 # 4. Hit it from another shell.
 curl -s http://127.0.0.1:5050/health
 curl -s -X POST \
     -F "file=@data/raw/include/Seasons/61. Summer/MVI_4568.MOV;type=video/quicktime" \
     "http://127.0.0.1:5050/predict?top_k=3"
+curl -s "http://127.0.0.1:5050/sample_predict?top_k=3&abstain_threshold=0.6"
+
+# 5. Run the audit.
+PYTHONPATH=src python3 scripts/audit.py
+# → artifacts/audit/audit_report.json
 ```
 
 ## Tests

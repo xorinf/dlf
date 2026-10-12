@@ -87,20 +87,44 @@ async def predict(file: UploadFile = File(...), top_k: int = 5,
         tmp = Path(fp.name)
     try:
         x, mask = _prep_video(tmp)
-        with torch.no_grad():
-            logits = _STATE["model"](x, mask)
-            probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
-        order = np.argsort(probs)[::-1][:top_k]
-        top_k_list = [{"class": _STATE["idx_to_class"].get(int(i), str(int(i))),
-                       "confidence": round(float(probs[i]), 4)} for i in order]
-        top1_conf = float(probs[order[0]])
-        pred = top_k_list[0]["class"] if top_k_list else "n/a"
-        if abstain_threshold > 0 and top1_conf < abstain_threshold:
-            pred = "uncertain"
-        return JSONResponse({"prediction": pred, "top1_confidence": round(top1_conf, 4),
-                             "top_k": top_k_list})
+        return _predict_tensor(x, top_k=top_k, abstain_threshold=abstain_threshold)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+@app.get("/sample_predict")
+async def sample_predict(top_k: int = 5, abstain_threshold: float = 0.0) -> JSONResponse:
+    """Predict on the first npz in data/processed/test — useful when no upload
+    is available. Lets the demo site exercise the model end-to-end without the
+    user picking a file."""
+    if "model" not in _STATE:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    test_files = sorted((Path("data/processed/test")).rglob("*.npz"))
+    if not test_files:
+        raise HTTPException(status_code=404, detail="no test clips on disk; "
+                                "run the include-style prep first")
+    from isl_bridge.infer import _prep_npz
+    x, mask = _prep_npz(test_files[0])
+    return _predict_tensor(x, top_k=top_k, abstain_threshold=abstain_threshold)
+
+
+def _predict_tensor(x: torch.Tensor, mask: torch.Tensor | None = None,
+                    *, top_k: int, abstain_threshold: float) -> JSONResponse:
+    """Shared post-processor used by both /predict and /sample_predict."""
+    with torch.no_grad():
+        if mask is None:
+            mask = torch.ones(x.shape[:2], dtype=torch.uint8)
+        logits = _STATE["model"](x, mask)
+        probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+    order = np.argsort(probs)[::-1][:top_k]
+    top_k_list = [{"class": _STATE["idx_to_class"].get(int(i), str(int(i))),
+                   "confidence": round(float(probs[i]), 4)} for i in order]
+    top1_conf = float(probs[order[0]])
+    pred = top_k_list[0]["class"] if top_k_list else "n/a"
+    if abstain_threshold > 0 and top1_conf < abstain_threshold:
+        pred = "uncertain"
+    return JSONResponse({"prediction": pred, "top1_confidence": round(top1_conf, 4),
+                         "top_k": top_k_list})
 
 
 def main() -> int:

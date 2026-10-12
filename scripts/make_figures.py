@@ -25,6 +25,7 @@ import cv2
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
 from isl_bridge import config, dataset, dataset_meta  # noqa: E402
 

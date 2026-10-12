@@ -1,0 +1,85 @@
+{
+  "ran_at": "2026-10-12T07:02:15",
+  "data": {
+    "n_total_records": 958,
+    "n_present": 22,
+    "n_missing": 936,
+    "n_zero_byte": 0,
+    "n_orphan_label": 15,
+    "bytes_present": 291663032,
+    "missing_pct": 97.7,
+    "elapsed_sec": 0.06
+  },
+  "model": {
+    "checkpoints": [
+      {
+        "path": "artifacts/phase3_real_run/best.pt",
+        "size_mb": 8.71,
+        "n_params": 2260598,
+        "size_mb_if_fp32": 8.62,
+        "backbone": "mobilenet_v2",
+        "num_classes": 2,
+        "epochs_history": 1
+      },
+      {
+        "path": "artifacts/phase4_real_run/best.pt",
+        "size_mb": 10.78,
+        "n_params": 2802296,
+        "size_mb_if_fp32": 10.69,
+        "backbone": "mobilenet_v2",
+        "num_classes": 2,
+        "epochs_history": 1
+      }
+    ],
+    "elapsed_sec": 0.95
+  },
+  "performance": {
+    "checkpoint": "artifacts/phase3_real_run/best.pt",
+    "n_passes": 5,
+    "median_ms": 1202.15,
+    "p95_ms": 1273.74,
+    "fps_effective": 0.8,
+    "elapsed_sec": 8.53
+  },
+  "robustness": {
+    "checkpoint": "artifacts/phase3_real_run/best.pt",
+    "n_clips_tested": 4,
+    "hflip_agreement": 75.0,
+    "temporal_subsample_agreement": 100.0,
+    "note": "agreement with original prediction on the same clip; high agreement = perturbation-invariant, low = the model is using the cue the perturbation destroyed.",
+    "elapsed_sec": 14.49
+  },
+  "api": {
+    "smells": {
+      "no_authentication": true,
+      "no_max_upload_size": true,
+      "verbose_error": false
+    },
+    "live_probe": {
+      "health_reachable": false,
+      "error": "HTTPError"
+    },
+    "note": "smells=True means the check *found* the listed smell; review before exposing publicly.",
+    "elapsed_sec": 0.06
+  },
+  "code": {
+    "n_files_scanned": 25,
+    "n_findings": 13,
+    "findings": [
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/synthetic.py:17:1: 'typing.Iterable' imported but unused",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/synthetic.py:21:1: '.dataloaders' imported but unused",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/synthetic.py:21:1: '.config' imported but unused",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/preprocess.py:27:1: 'os' imported but unused",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/preprocess.py:83:5: local variable 'n' is assigned to but never used",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/preprocess.py:170:25: local variable 'fps_in' is assigned to but never used",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/preprocess.py:170:40: local variable 'n_in' is assigned to but never used",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/dataset.py:165:5: local variable 'corrupted' is assigned to but never used",
+      "/Users/yashhwanth/Documents/dlf/src/isl_bridge/eval.py:12:1: 'collections.defaultdict' imported but unused",
+      "/Users/yashhwanth/Documents/dlf/scripts/write_dataset_summary.py:35:5: local variable 'cov' is assigned to but never used",
+      "/Users/yashhwanth/Documents/dlf/scripts/make_figures.py:13:1: 'json' imported but unused",
+      "/Users/yashhwanth/Documents/dlf/scripts/make_figures.py:14:1: 'math' imported but unused",
+      "/Users/yashhwanth/Documents/dlf/scripts/train_baseline.py:21:1: 'isl_bridge.config' imported but unused"
+    ],
+    "elapsed_sec": 0.12
+  }
+}
