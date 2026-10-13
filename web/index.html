@@ -705,7 +705,20 @@ $("#btnCamStop").addEventListener("click", stopCamera);
 // .MOV, and POSTs the same file to /predict — same code path as a manual
 // upload but with zero clicks. Used for the demo when the user doesn't
 // know sign language.
-const sample = { classes: {}, busy: false };
+//
+// ponytail: the previous version fetched the .MOV twice per click (once
+// for the <video> src, once for the POST body) and gated everything on a
+// `sample.busy` flag that silently swallowed legitimate second clicks
+// during the 4-5s model inference. That race is the root cause of
+// "other buttons not working". Fix: fetch once, blob-URL the video, abort
+// any in-flight predict when a new click comes in, don't block clicks.
+const sample = {
+  classes: {},
+  // Token incremented on every click; in-flight predict checks this and
+  // bails if it changed mid-flight.
+  clickToken: 0,
+  abortCtrl: null,  // AbortController for the current /predict POST
+};
 
 async function loadSampleClips() {
   try {
@@ -713,7 +726,6 @@ async function loadSampleClips() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
     sample.classes = d.classes || {};
-    // Re-label buttons with file counts and enable.
     document.querySelectorAll(".sample-clip-btn").forEach((btn) => {
       const cls = btn.dataset.class;
       const files = (sample.classes[cls] || []);
@@ -732,39 +744,68 @@ async function loadSampleClips() {
 }
 
 async function playSampleClip(cls) {
-  if (sample.busy) return;
-  sample.busy = true;
-  const v = $("#sampleVideo");
-  v.src = `${state.api}/sample_video?cls=${encodeURIComponent(cls)}&t=${Date.now()}`;
-  v.load();
-  try { await v.play(); } catch (_) { /* user can click play */ }
-  log(`playing ${cls} sample — sending to /predict`);
-  // Now POST the same file to /predict (the server will decode the .MOV
-  // through the same pipeline as a manual upload).
-  const r = await fetch(`${state.api}/sample_video?cls=${encodeURIComponent(cls)}&t=${Date.now()}`);
-  if (!r.ok) {
-    log(`predict failed: HTTP ${r.status}`);
-    sample.busy = false;
+  // Increment the token so any prior in-flight predict aborts itself.
+  const myToken = ++sample.clickToken;
+  // Abort any prior in-flight /predict POST so its result is discarded.
+  if (sample.abortCtrl) {
+    try { sample.abortCtrl.abort(); } catch (_) {}
+    sample.abortCtrl = null;
+  }
+  // Visual: mark this button as active, others as not.
+  document.querySelectorAll(".sample-clip-btn").forEach((b) => {
+    b.style.outline = b.dataset.class === cls ? "2px solid #111" : "";
+  });
+
+  log(`loading ${cls} sample...`);
+  let blob;
+  try {
+    const r = await fetch(`${state.api}/sample_video?cls=${encodeURIComponent(cls)}&t=${Date.now()}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    blob = await r.blob();
+  } catch (e) {
+    log(`sample fetch failed: ${e.message}`);
     return;
   }
-  const blob = await r.blob();
+  if (myToken !== sample.clickToken) return;  // a newer click took over
+
+  // Set the video src from a blob URL (no second fetch).
+  const v = $("#sampleVideo");
+  if (v.src && v.src.startsWith("blob:")) URL.revokeObjectURL(v.src);
+  const url = URL.createObjectURL(blob);
+  v.src = url;
+  try { await v.play(); } catch (_) { /* user can click play manually */ }
+  if (myToken !== sample.clickToken) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+
+  log(`predicting ${cls} sample (${(blob.size/1024/1024).toFixed(1)} MB)...`);
   const fd = new FormData();
   fd.append("file", blob, `${cls}_sample.MOV`);
+  sample.abortCtrl = new AbortController();
   try {
-    const pr = await fetch(`${state.api}/predict?top_k=${state.topK}&abstain_threshold=${state.abstain}`, {
-      method: "POST", body: fd,
-    });
+    const pr = await fetch(
+      `${state.api}/predict?top_k=${state.topK}&abstain_threshold=${state.abstain}`,
+      { method: "POST", body: fd, signal: sample.abortCtrl.signal },
+    );
     if (!pr.ok) {
       const t = await pr.text();
       throw new Error(`HTTP ${pr.status} — ${t.slice(0, 120)}`);
     }
     const pd = await pr.json();
+    if (myToken !== sample.clickToken) return;  // a newer click superseded us
     log(`sample prediction: ${pd.prediction} (conf ${pd.top1_confidence.toFixed(3)})`);
     renderResult(pd);
   } catch (e) {
-    log(`sample predict failed: ${e.message}`);
+    if (e.name === "AbortError") {
+      log(`sample predict for ${cls} aborted (newer click won)`);
+    } else {
+      log(`sample predict failed: ${e.message}`);
+    }
   } finally {
-    sample.busy = false;
+    if (sample.abortCtrl && myToken === sample.clickToken) {
+      sample.abortCtrl = null;
+    }
   }
 }
 
