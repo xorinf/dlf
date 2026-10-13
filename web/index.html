@@ -204,7 +204,7 @@
       <button id="btnSample" type="button">Use a sample clip</button>
       <button id="btnPredict" type="button" disabled>Predict</button>
       <span class="sub">Top-k: <input type="range" id="topK" min="1" max="5" /> <span id="topKVal">3</span></span>
-      <span class="sub">Abstain if conf &lt; <input type="range" id="abstain" min="0" max="100" value="60" /> <span id="outAbstain">0.60</span></span>
+      <span class="sub">Abstain if conf &lt; <input type="range" id="abstain" min="0" max="100" value="15" /> <span id="outAbstain">0.15</span></span>
     </div>
   </section>
 
@@ -269,7 +269,7 @@ const log = (m) => { const el = $("#log"); el.textContent += `[${new Date().toLo
 // set window.__ISL_API__ before this script runs.
 const META_API = document.querySelector('meta[name="isl-api"]');
 const state = {
-  file: null, topK: 3, abstain: 0.60,
+  file: null, topK: 3, abstain: 0.15,
   emitThresh: 0.60, emitCooldownMs: 1500,
   api: (META_API && META_API.content)
     || (typeof window.__ISL_API__ === "string" ? window.__ISL_API__ : null)
@@ -799,8 +799,9 @@ async function playSampleClip(cls) {
     }
     const pd = await pr.json();
     if (myToken !== sample.clickToken) return;  // a newer click superseded us
-    log(`sample prediction: ${pd.prediction} (conf ${pd.top1_confidence.toFixed(3)})`);
-    renderResult(pd);
+    const correct = pd.prediction === cls ? " (correct)" : " (wrong)";
+    log(`sample prediction: ${pd.prediction}${correct}  conf ${pd.top1_confidence.toFixed(3)}  ground-truth=${cls}`);
+    renderResult(pd, cls);
   } catch (e) {
     if (e.name === "AbortError") {
       log(`sample predict for ${cls} aborted (newer click won)`);
@@ -903,12 +904,17 @@ $("#btnPredict").addEventListener("click", async () => {
 });
 
 // --- Result rendering --------------------------------------------------------
-function renderResult(d) {
+function renderResult(d, groundTruth) {
   $("#resultPanel").hidden = false;
   const p = d.prediction || "n/a";
   const conf = Number.isFinite(d.top1_confidence) ? d.top1_confidence : 0;
   const uncertain = p === "uncertain";
-  $("#prediction").innerHTML = `<span class="lbl">Prediction</span><b>${esc(p)}</b> &nbsp; <span class="sub">conf <b>${conf.toFixed(3)}</b>${uncertain ? ` (below ${state.abstain.toFixed(2)} — abstained)` : ""}</span>`;
+  let gtNote = "";
+  if (groundTruth) {
+    const correct = p === groundTruth;
+    gtNote = ` &nbsp; <span class="sub">ground-truth <b>${esc(groundTruth)}</b> — ${correct ? "correct" : "wrong"}</span>`;
+  }
+  $("#prediction").innerHTML = `<span class="lbl">Prediction</span><b>${esc(p)}</b> &nbsp; <span class="sub">conf <b>${conf.toFixed(3)}</b>${uncertain ? ` (below ${state.abstain.toFixed(2)} — abstained)` : ""}</span>${gtNote}`;
   const topk = Array.isArray(d.top_k) && d.top_k.length ? d.top_k : [];
   const max = topk.length ? Math.max(...topk.map(x => x.confidence || 0)) : 1;
   $("#topKList").innerHTML = topk.length
