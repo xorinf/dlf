@@ -32,6 +32,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import cv2
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -113,6 +114,59 @@ async def predict(file: UploadFile = File(...), top_k: int = 5,
         return _predict_tensor(x, top_k=top_k, abstain_threshold=abstain_threshold)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+@app.post("/predict_frames")
+async def predict_frames(
+    files: list[UploadFile] = File(...),
+    top_k: int = 5,
+    abstain_threshold: float = 0.0,
+) -> JSONResponse:
+    """Live webcam path: browser sends a batch of JPEG frames (default 32, ~1.6s
+    at 20 fps). Decoded + normalised with the same pipeline as /predict, then
+    the shared post-processor runs. Ponytail ceiling: no batching across
+    concurrent users — single-process, request-per-batch. If two browsers
+    stream at once we serve them serially. Add an inference queue if it bites.
+    """
+    if "model" not in _STATE:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    if len(files) < 8:
+        raise HTTPException(status_code=400, detail=f"need >=8 frames, got {len(files)}")
+    # Decode each JPEG -> BGR uint8.
+    bgrs: list[np.ndarray] = []
+    for f in files:
+        data = await f.read()
+        arr = np.frombuffer(data, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(status_code=400, detail=f"could not decode frame {f.filename}")
+        bgrs.append(img)
+    # Build (1, T, 3, H, W) tensor with the same resize + normalise as /predict.
+    from isl_bridge.preprocess import DEFAULT_FRAMES, DEFAULT_SIZE
+    from isl_bridge.dataloaders import IMAGENET_MEAN, IMAGENET_STD
+    n_frames = DEFAULT_FRAMES
+    # If the browser sent more, take the most recent n_frames; if fewer, tile.
+    if len(bgrs) >= n_frames:
+        bgrs = bgrs[-n_frames:]
+    else:
+        reps = int(np.ceil(n_frames / len(bgrs)))
+        bgrs = (bgrs * reps)[:n_frames]
+    rgb = np.stack([b[:, :, ::-1] for b in bgrs], axis=0)            # (T,H,W,3) RGB
+    # Resize-aspect-pad to DEFAULT_SIZE (matches _resize_keep_aspect).
+    h, w = rgb.shape[1], rgb.shape[2]
+    s = DEFAULT_SIZE / max(h, w)
+    new_w, new_h = int(round(w * s)), int(round(h * s))
+    out = np.zeros((n_frames, DEFAULT_SIZE, DEFAULT_SIZE, 3), dtype=rgb.dtype)
+    for i in range(n_frames):
+        rs = cv2.resize(rgb[i], (new_w, new_h),
+                        interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+        out[i, :new_h, :new_w] = rs
+    x = torch.from_numpy(out).float() / 255.0
+    x = x.permute(0, 3, 1, 2)
+    mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1)
+    x = ((x - mean) / std).unsqueeze(0)                                # (1,T,3,H,W)
+    return _predict_tensor(x, top_k=top_k, abstain_threshold=abstain_threshold)
 
 
 @app.get("/sample_predict")
