@@ -4,6 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>ISL-Bridge — Demo</title>
+<!-- MediaPipe Tasks (vision) for the person + hand landmark box. CDN-only,
+     no install. ~3MB wasm + model. We don't ship the model — fetched on
+     first use; the page still works without it, just no box overlay. -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs" type="module"></script>
 <style>
   :root {
     --ink: #111; --paper: #fafafa; --line: #ddd;
@@ -62,10 +66,7 @@
     position: relative; display: inline-block; line-height: 0;
     border: 1px solid var(--line); background: #000;
   }
-  .stage video, .stage canvas {
-    display: block; max-width: 480px; width: 480px; height: 360px;
-  }
-  .stage video { background: #000; }
+  .stage video { display: block; max-width: 480px; width: 480px; height: 360px; background: #000; }
   .stage canvas.overlay {
     position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
   }
@@ -85,34 +86,37 @@
     border: 1px solid var(--line);
   }
   .rec-dot.live { background: #111; }
+  .stage .box-label {
+    position: absolute; pointer-events: none;
+    background: var(--ink); color: var(--paper);
+    font: 12px/1.2 ui-sans-serif, system-ui, sans-serif;
+    padding: 2px 6px; border-radius: 2px; font-weight: 600;
+    transform: translate(-2px, -100%); white-space: nowrap;
+  }
+  .stage .box-label .conf { opacity: 0.75; font-weight: 400; margin-left: 6px; }
 
-  /* --- emitted translations -------------------------------------------- */
-  .emitted {
-    border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px;
-    min-height: 64px; max-height: 220px; overflow-y: auto; background: #fcfcfc;
+  /* --- translation (sentence) panel ------------------------------------- */
+  .translation {
+    border: 1px solid var(--line); border-radius: 4px; padding: 14px 16px;
+    min-height: 60px; background: #fcfcfc;
+    font: 18px/1.4 ui-sans-serif, system-ui, sans-serif;
   }
-  .emitted:empty::before {
-    content: "— no signs emitted yet —";
-    color: var(--muted); font-size: 12px;
+  .translation:empty::before {
+    content: "— translation will appear here as signs are recognised —";
+    color: var(--muted); font-size: 13px; font-style: italic;
   }
-  .emitted .entry {
-    display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px dashed var(--line);
-    font-variant-numeric: tabular-nums;
+  .translation .word { display: inline-block; margin: 0 4px 0 0; padding: 0; }
+  .translation .word.fresh { animation: pop 0.5s ease-out; }
+  @keyframes pop {
+    0%   { background: #f0f0f0; transform: translateY(-2px); }
+    100% { background: transparent; transform: translateY(0); }
   }
-  .emitted .entry:last-child { border-bottom: none; }
-  .emitted .ts { color: var(--muted); font: 12px/1.5 ui-monospace, monospace; min-width: 70px; }
-  .emitted .word { font-weight: 600; min-width: 90px; }
-  .emitted .conf { color: var(--muted); font-size: 12px; }
-  .emitted .entry.fresh { animation: pulse 0.6s ease-out; }
-  @keyframes pulse {
-    0%   { background: #f0f0f0; }
-    100% { background: transparent; }
-  }
+  .trans-meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
 
   @media (max-width: 600px) {
     .wrap { margin: 16px auto; }
     .row { flex-direction: column; align-items: stretch; }
-    .stage video, .stage canvas { width: 100%; height: auto; }
+    .stage video { width: 100%; height: auto; }
   }
 </style>
 </head>
@@ -125,12 +129,15 @@
   </header>
 
   <section class="panel">
-    <h2>Webcam — live</h2>
+    <h2>Webcam — live translation</h2>
     <div class="row">
       <button id="btnCamStart" type="button">Start camera</button>
       <button id="btnCamStop" type="button" disabled>Stop camera</button>
       <label class="sub" style="display:inline-flex; align-items:center; gap:6px;">
         <input type="checkbox" id="chkAutoSpeak" /> Auto-speak new signs
+      </label>
+      <label class="sub" style="display:inline-flex; align-items:center; gap:6px;">
+        <input type="checkbox" id="chkLandmarks" checked /> Draw person / hand box
       </label>
       <span class="sub">Emit threshold:
         <input type="range" id="emitThresh" min="0" max="100" value="60" style="vertical-align:middle;" />
@@ -153,16 +160,17 @@
         <div class="rec-dot" id="recDot" title="live prediction stream"></div>
       </div>
     </div>
-    <p class="sub">Browser captures ~10 fps into a 16-frame window (~1.6 s) and posts the JPEG batch to <code>/predict_frames</code> every 2.5 s. Top-1 + confidence render on the preview; confident new signs land in the panel below. CPU-bound GRU inference is the bottleneck — on a GPU this would be sub-second.</p>
+    <p class="sub">Browser captures ~10 fps into a 16-frame window (~1.6 s) and posts the JPEG batch to <code>/predict_frames</code> every 2.5 s. Top-1 + confidence render on the preview and inside the hand/person box. Each confident new sign is appended to the translation below. CPU-bound GRU inference is the bottleneck — on a GPU this would be sub-second.</p>
   </section>
 
   <section class="panel">
-    <h2>Emitted translations</h2>
-    <div class="emitted" id="emitted"></div>
+    <h2>Translation</h2>
+    <div class="translation" id="translation"></div>
     <div class="row" style="margin-top: 8px;">
-      <button id="btnSpeakLast" type="button">Speak last</button>
+      <button id="btnSpeakLast" type="button">Speak last sign</button>
+      <button id="btnSpeakAll" type="button">Speak full sentence</button>
       <button id="btnClearEmitted" type="button">Clear</button>
-      <span class="sub" id="emittedSummary">—</span>
+      <span class="trans-meta" id="transMeta">— 0 signs · 0 words spoken</span>
     </div>
   </section>
 
@@ -213,7 +221,7 @@
 <dialog id="aboutDlg">
   <h3>About this demo</h3>
   <p>Single-file HTML that talks to the ISL-Bridge FastAPI backend.</p>
-  <p><strong>Live path</strong>: the webcam section captures ~10 frames/sec into a 16-frame rolling window (~1.6s), batches them as JPEGs, and POSTs to <code>/predict_frames</code> every 2.5s. The current top-1 + confidence render on the camera preview; a confident new sign (above the threshold, past the cooldown) is added to "Emitted translations" and optionally spoken.</p>
+  <p><strong>Live path</strong>: the webcam section captures ~10 frames/sec into a 16-frame rolling window (~1.6s), batches them as JPEGs, and POSTs to <code>/predict_frames</code> every 2.5s. MediaPipe Pose + HandLandmarker draw a person / hand box on the preview in real time and the current top-1 + confidence label rides on top of it. A confident new sign (above the threshold, past the cooldown) is appended to the Translation panel below and optionally spoken.</p>
   <p><strong>File / sample path</strong>: upload a <code>.mov</code> / <code>.mp4</code> / <code>.webm</code> or click "Use a sample clip" to run <code>/predict</code> or <code>/sample_predict</code> on a one-shot clip.</p>
   <p>Honest note: the on-disk working subset covers 2 INCLUDE classes (fall, summer). Numbers reported in the README are pipeline-completeness only.</p>
   <form method="dialog"><button class="nav-btn">Close</button></form>
@@ -255,30 +263,34 @@ async function refreshHealth() {
   }
 }
 
-// --- Live webcam: rolling-frame prediction ---------------------------------
-// ponytail: ~20 fps grab via rVFC, keep last 32 frames (~1.6s) as JPEGs in a
-// ring buffer, POST every TICK_MS. HUD is updated with the latest result.
-// Emitted translations is a separate stream with its own threshold + cooldown
-// so the same sign doesn't spam every 400ms.
+// --- Live webcam: rolling-frame prediction + MediaPipe box overlay --------
+// ponytail: rVFC capture -> 16-frame ring of JPEGs -> POST every 2.5s.
+// MediaPipe Pose + HandLandmarker run on the same frames to draw a box
+// around the active signer and place the live label inside it. If
+// MediaPipe fails to load (offline, CDN blocked), the page still works:
+// no box, but HUD + translation still flow.
 const cam = {
-  stream: null, video: null, canvas: null, ctx: null,
-  frames: [],     // ring of recent JPEG dataURLs
-  maxFrames: 16,   // ~1.6s at 10fps — fewer frames keeps CPU GRU inference under ~3s
-  fps: 10,         // capture target
-  tickMs: 2500,    // prediction cadence — GRU on CPU is ~3s; 2.5s keeps the HUD alive
-  rvfcId: null,
-  tickId: null,
-  busy: false,
-  lastEmitted: { word: null, ts: 0 },
-  emittedCount: 0,
+  stream: null, video: null, drawCanvas: null, drawCtx: null,
+  frames: [],     // ring of recent JPEG blobs
+  maxFrames: 16,   // ~1.6s at 10fps
+  fps: 10,
+  tickMs: 2500,    // CPU GRU is ~3-4s for 16 frames; 2.5s tick keeps HUD alive
+  rvfcId: null, tickId: null, busy: false,
+  // MediaPipe
+  poseLandmarker: null, handLandmarker: null, mpReady: false,
+  mpLoading: null,
+  // translation state
+  translationWords: [],  // running sentence
+  spoken: 0,
+  lastBoxLabel: null,    // {word, conf, x, y, w, h} for the box-label
 };
 
 async function startCamera() {
   if (cam.stream) return;
   cam.video = $("#camVideo");
-  cam.canvas = document.createElement("canvas");
-  cam.canvas.width = 320; cam.canvas.height = 240;
-  cam.ctx = cam.canvas.getContext("2d", { willReadFrequently: false });
+  cam.drawCanvas = $("#camOverlay");
+  resizeOverlay();
+  cam.drawCtx = cam.drawCanvas.getContext("2d");
 
   try {
     cam.stream = await navigator.mediaDevices.getUserMedia({
@@ -286,7 +298,6 @@ async function startCamera() {
     });
   } catch (e) {
     log(`camera permission denied: ${e.message}`);
-    $("#camStatus") && ($("#camStatus").textContent = "Permission denied");
     return;
   }
   cam.video.srcObject = cam.stream;
@@ -297,40 +308,27 @@ async function startCamera() {
   $("#recDot").classList.add("live");
   log("camera started — capturing frames");
 
-  // Frame capture loop. rVFC is supported in modern browsers; fall back to
-  // setInterval if it isn't.
+  // Try to load MediaPipe in the background; we don't block on it.
+  ensureMediaPipe().then(ok => {
+    if (ok) log("MediaPipe loaded — person/hand box overlay enabled");
+    else log("MediaPipe unavailable — running without box overlay");
+  });
+
   if ("requestVideoFrameCallback" in cam.video) {
     const grab = (now, meta) => {
       if (!cam.stream) return;
-      cam.ctx.drawImage(cam.video, 0, 0, cam.canvas.width, cam.canvas.height);
-      cam.canvas.toBlob((blob) => {
-        if (!blob) return;
-        cam.frames.push(blob);
-        if (cam.frames.length > cam.maxFrames) cam.frames.shift();
-      }, "image/jpeg", 0.7);
+      captureAndDetect();
       cam.rvfcId = cam.video.requestVideoFrameCallback(grab);
     };
     cam.rvfcId = cam.video.requestVideoFrameCallback(grab);
   } else {
     const period = 1000 / cam.fps;
-    cam.rvfcId = setInterval(() => {
-      if (!cam.stream) return;
-      cam.ctx.drawImage(cam.video, 0, 0, cam.canvas.width, cam.canvas.height);
-      cam.canvas.toBlob((blob) => {
-        if (!blob) return;
-        cam.frames.push(blob);
-        if (cam.frames.length > cam.maxFrames) cam.frames.shift();
-      }, "image/jpeg", 0.7);
-    }, period);
+    cam.rvfcId = setInterval(() => { if (cam.stream) captureAndDetect(); }, period);
   }
-  // ponytail: server-side ceiling — single GRU model on CPU is ~3s/16 frames.
+  // ponytail: server-side ceiling — single GRU model on CPU is ~3-4s/16 frames.
   // 2.5s tick means the user sees the latest result within ~5s of starting
-  // to sign. GPU / batching would drop this to <500ms; out of scope for a
-  // teacher demo.
-
-  // Prediction tick.
+  // to sign. GPU / batching would drop this to <500ms.
   cam.tickId = setInterval(predictTick, cam.tickMs);
-  resizeOverlay();
   window.addEventListener("resize", resizeOverlay);
 }
 
@@ -339,6 +337,166 @@ function resizeOverlay() {
   const ov = $("#camOverlay");
   ov.width = Math.round(stage.width);
   ov.height = Math.round(stage.height);
+  if (cam.drawCtx) cam.drawCtx.clearRect(0, 0, ov.width, ov.height);
+}
+
+function captureAndDetect() {
+  const w = cam.drawCanvas.width, h = cam.drawCanvas.height;
+  // The capture frame is the same one we use for prediction (smaller,
+  // 320x240) so the JPEG size is sane.
+  const cap = document.createElement("canvas");
+  cap.width = 320; cap.height = 240;
+  const capCtx = cap.getContext("2d");
+  capCtx.drawImage(cam.video, 0, 0, cap.width, cap.height);
+  cap.toBlob((blob) => {
+    if (!blob) return;
+    cam.frames.push(blob);
+    if (cam.frames.length > cam.maxFrames) cam.frames.shift();
+  }, "image/jpeg", 0.7);
+  // Draw landmarks on the overlay (skipped silently if MediaPipe not ready).
+  drawLandmarks(cap);
+}
+
+// --- MediaPipe loader (CDN, no install) ------------------------------------
+let _mpMod = null;
+async function ensureMediaPipe() {
+  if (cam.mpReady) return true;
+  if (cam.mpLoading) return cam.mpLoading;
+  cam.mpLoading = (async () => {
+    try {
+      _mpMod = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs");
+      const { PoseLandmarker, HandLandmarker, FilesetResolver } = _mpMod;
+      const fileset = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm"
+      );
+      cam.poseLandmarker = await PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numPoses: 1,
+      });
+      cam.handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: 2,
+      });
+      cam.mpReady = true;
+      return true;
+    } catch (e) {
+      log(`MediaPipe init failed: ${e.message}`);
+      return false;
+    }
+  })();
+  return cam.mpLoading;
+}
+
+function drawLandmarks(capCanvas) {
+  if (!cam.mpReady) return;
+  if (!$("#chkLandmarks").checked) return;
+  const ctx = cam.drawCtx;
+  const W = cam.drawCanvas.width, H = cam.drawCanvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const ts = performance.now();
+  // Pose
+  let personBox = null;
+  try {
+    const poseRes = cam.poseLandmarker.detectForVideo(capCanvas, ts);
+    if (poseRes.landmarks && poseRes.landmarks.length) {
+      const lms = poseRes.landmarks[0];
+      personBox = landmarksBBox(lms);
+      // draw a few key joints to make it look like a skeleton
+      ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1;
+      const pairs = [[11,12],[11,23],[12,24],[23,24],[11,13],[13,15],[12,14],[14,16]];
+      ctx.beginPath();
+      for (const [a, b] of pairs) {
+        const A = lms[a], B = lms[b];
+        if (!A || !B) continue;
+        ctx.moveTo(A.x * W, A.y * H);
+        ctx.lineTo(B.x * W, B.y * H);
+      }
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const p of lms) {
+        ctx.beginPath(); ctx.arc(p.x * W, p.y * H, 2, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  } catch (e) { /* swallow — detector hiccup, keep going */ }
+  // Hands
+  let handBox = null;
+  try {
+    const handRes = cam.handLandmarker.detectForVideo(capCanvas, ts);
+    if (handRes.landmarks && handRes.landmarks.length) {
+      // union of all hand bboxes -> the "active" hand area
+      const boxes = handRes.landmarks.map(lms => landmarksBBox(lms));
+      handBox = unionBBox(boxes);
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      for (const lms of handRes.landmarks) {
+        for (const p of lms) {
+          ctx.beginPath(); ctx.arc(p.x * W, p.y * H, 2.5, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    }
+  } catch (e) { /* swallow */ }
+
+  // Pick the active box: prefer the hand box (more specific) when present,
+  // else the person box, else just keep the previous label position.
+  const targetBox = handBox || personBox;
+  if (targetBox) {
+    drawBox(targetBox, cam.lastBoxLabel);
+  }
+}
+
+function landmarksBBox(lms) {
+  let minX = 1, minY = 1, maxX = 0, maxY = 0;
+  for (const p of lms) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  // pad the box a bit so the label fits
+  const padX = (maxX - minX) * 0.08;
+  const padY = (maxY - minY) * 0.12;
+  return {
+    x: Math.max(0, minX - padX),
+    y: Math.max(0, minY - padY),
+    w: Math.min(1, maxX - minX + 2 * padX),
+    h: Math.min(1, maxY - minY + 2 * padY),
+  };
+}
+function unionBBox(boxes) {
+  if (!boxes.length) return null;
+  let x = boxes[0].x, y = boxes[0].y, r = x + boxes[0].w, b = y + boxes[0].h;
+  for (const bx of boxes) {
+    x = Math.min(x, bx.x); y = Math.min(y, bx.y);
+    r = Math.max(r, bx.x + bx.w); b = Math.max(b, bx.y + bx.h);
+  }
+  return { x, y, w: r - x, h: b - y };
+}
+function drawBox(b, label) {
+  const ctx = cam.drawCtx;
+  const W = cam.drawCanvas.width, H = cam.drawCanvas.height;
+  const px = b.x * W, py = b.y * H, pw = b.w * W, ph = b.h * H;
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+  ctx.strokeRect(px, py, pw, ph);
+  if (label && label.word) {
+    // re-create the floating label each frame so the position follows the box
+    const stage = $("#stage");
+    let lbl = stage.querySelector(".box-label");
+    if (!lbl) {
+      lbl = document.createElement("div");
+      lbl.className = "box-label";
+      stage.appendChild(lbl);
+    }
+    lbl.style.left = `${px}px`;
+    lbl.style.top  = `${py}px`;
+    lbl.innerHTML = `${esc(label.word)}<span class="conf">${(label.conf*100).toFixed(0)}%</span>`;
+  }
 }
 
 function stopCamera() {
@@ -360,15 +518,16 @@ function stopCamera() {
   $("#btnCamStart").disabled = false;
   $("#btnCamStop").disabled = true;
   $("#recDot").classList.remove("live");
+  if (cam.drawCtx) cam.drawCtx.clearRect(0, 0, cam.drawCanvas.width, cam.drawCanvas.height);
+  const lbl = $("#stage .box-label"); if (lbl) lbl.remove();
   log("camera stopped");
   renderHud(null);
+  cam.lastBoxLabel = null;
 }
 
 async function predictTick() {
   if (cam.busy || cam.frames.length < 8) return;
   cam.busy = true;
-  // Snapshot the current window; if the user has fewer than maxFrames yet
-  // (startup), we still send what we have — the server tiles up to 32.
   const window = cam.frames.slice(-cam.maxFrames);
   const fd = new FormData();
   for (let i = 0; i < window.length; i++) {
@@ -393,6 +552,13 @@ async function predictTick() {
 
 function onPrediction(d) {
   renderHud(d);
+  // Save the latest label so drawLandmarks (next rVFC tick) can put it on
+  // the box.
+  if (d && d.top_k && d.top_k[0]) {
+    cam.lastBoxLabel = { word: d.prediction || d.top_k[0].class, conf: d.top1_confidence };
+  } else {
+    cam.lastBoxLabel = null;
+  }
   maybeEmit(d);
 }
 
@@ -417,28 +583,32 @@ function maybeEmit(d) {
   const now = Date.now();
   const c = d.top1_confidence;
   const w = d.prediction || top1.class;
-  const sameWord = cam.lastEmitted.word === w;
-  const cooled = (now - cam.lastEmitted.ts) >= state.emitCooldownMs;
+  const sameWord = cam.lastEmitted && cam.lastEmitted.word === w;
+  const cooled = cam.lastEmitted ? (now - cam.lastEmitted.ts) >= state.emitCooldownMs : true;
   const confident = c >= state.emitThresh;
   const notAbstained = d.prediction !== "uncertain";
   if (!(confident && notAbstained && (!sameWord || cooled))) return;
   cam.lastEmitted = { word: w, ts: now };
-  cam.emittedCount += 1;
-  appendEmitted(w, c, now);
-  if ($("#chkAutoSpeak").checked) speak(w);
+  cam.translationWords.push(w);
+  appendTranslationWord(w);
+  if ($("#chkAutoSpeak").checked) { speak(w); cam.spoken += 1; }
+  updateTransMeta();
   log(`emitted: ${w} (conf ${c.toFixed(2)})`);
 }
 
-function appendEmitted(word, conf, ts) {
-  const el = $("#emitted");
-  const row = document.createElement("div");
-  row.className = "entry fresh";
-  const tsStr = new Date(ts).toLocaleTimeString();
-  row.innerHTML = `<span class="ts">${tsStr}</span><span class="word">${esc(word)}</span><span class="conf">conf ${conf.toFixed(2)}</span>`;
-  el.prepend(row);
-  // Trim to last 50 entries — keeps the DOM light during a long demo.
-  while (el.childElementCount > 50) el.removeChild(el.lastChild);
-  $("#emittedSummary").textContent = `${cam.emittedCount} sign${cam.emittedCount === 1 ? "" : "s"} emitted`;
+function appendTranslationWord(word) {
+  const el = $("#translation");
+  const span = document.createElement("span");
+  span.className = "word fresh";
+  span.textContent = word + " ";
+  el.appendChild(span);
+  setTimeout(() => span.classList.remove("fresh"), 600);
+  el.scrollTop = el.scrollHeight;
+}
+
+function updateTransMeta() {
+  const n = cam.translationWords.length;
+  $("#transMeta").textContent = `— ${n} sign${n === 1 ? "" : "s"} · ${cam.spoken} spoken`;
 }
 
 function speak(text) {
@@ -459,12 +629,20 @@ $("#emitCooldown").addEventListener("input", (e) => {
   state.emitCooldownMs = +e.target.value;
   $("#emitCooldownVal").textContent = `${(state.emitCooldownMs / 1000).toFixed(1)}s`;
 });
-$("#btnSpeakLast").addEventListener("click", () => speak(cam.lastEmitted.word));
+$("#btnSpeakLast").addEventListener("click", () => speak(cam.lastEmitted && cam.lastEmitted.word));
+$("#btnSpeakAll").addEventListener("click", () => {
+  const sentence = cam.translationWords.join(" ");
+  if (!sentence) { log("no signs to speak"); return; }
+  speak(sentence);
+  cam.spoken += cam.translationWords.length;
+  updateTransMeta();
+});
 $("#btnClearEmitted").addEventListener("click", () => {
-  $("#emitted").innerHTML = "";
-  cam.emittedCount = 0;
-  cam.lastEmitted = { word: null, ts: 0 };
-  $("#emittedSummary").textContent = "—";
+  $("#translation").innerHTML = "";
+  cam.translationWords = [];
+  cam.spoken = 0;
+  cam.lastEmitted = null;
+  updateTransMeta();
 });
 
 // --- File handling -----------------------------------------------------------

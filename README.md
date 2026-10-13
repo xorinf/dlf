@@ -2,11 +2,34 @@
 
 A small system that takes webcam video of a person signing an Indian
 Sign Language word and outputs the most likely word, with a confidence
-score. Optional spoken output.
+score. Optional spoken output. Live on-screen bounding box around the
+active signer via MediaPipe.
 
 This repository is a 10-phase university build. All 10 phases have code
 that runs; phases 1–3, 4–7, and 8–10 have been exercised end-to-end on
 the on-disk subset, with honest, documented numbers.
+
+## Run it in one command
+
+```bash
+./run.sh
+```
+
+`run.sh` resolves a working Python (one with numpy / torch / fastapi /
+uvicorn / cv2), loads the phase-4 GRU checkpoint, boots the API on
+`127.0.0.1:5050`, serves the demo UI on `127.0.0.1:8000`, and opens it
+in your default browser. Stop with Ctrl-C.
+
+The UI:
+* live webcam preview with a MediaPipe Pose + HandLandmarker box around
+  the active signer and the current top-1 label rendered on top of it
+* rolling 16-frame window (~1.6 s at 10 fps) POSTed to
+  `/predict_frames` every 2.5 s
+* a "Translation" panel where each confident new sign is appended to
+  a sentence, with per-class cooldown so the same sign doesn't spam
+  every tick
+* TTS via the browser's built-in `speechSynthesis` (optional auto-speak)
+* file / sample clip fallback for offline demos
 
 ## What you get when you run this
 
@@ -50,7 +73,7 @@ tells you which of the trained words it most likely is.
 | 5  | Spatial augmentation                  | done     | `src/isl_bridge/augment.py`                                |
 | 6  | Real-time recognition (webcam)     | done     | `scripts/webcam_demo.py`                                   |
 | 7  | Text & speech interface (TTS)      | done     | `src/isl_bridge/tts.py`, `scripts/infer_cnn.py --abstain-threshold` |
-| 8  | FastAPI backend                     | done     | `scripts/api.py`                                           |
+| 8  | FastAPI backend                     | done     | `scripts/api.py` (`/health`, `/classes`, `/predict`, `/sample_predict`, `/predict_frames`) |
 | 9  | Evaluation & reporting             | done     | `src/isl_bridge/eval.py`, `artifacts/*/evaluation.json`, `…/reports/` |
 | 10 | Deployment & final submission      | done     | This README + the GitHub repo                              |
 
@@ -337,7 +360,8 @@ This README + the GitHub repo is the deliverable. To deploy:
 │   ├── make_figures.py                ← dataset visualisations
 │   └── write_dataset_summary.py       ← dataset inventory JSON
 ├── web/
-│   └── index.html                     ← single-file demo website (no build)
+│   └── index.html                     ← single-file demo website (no build): webcam, MediaPipe box, live translation
+├── run.sh                             ← one-command demo launcher (API + web + browser open)
 ├── data/                              ← not committed (see .gitignore)
 │   ├── raw/include/                   ← extracted videos
 │   ├── processed/                     ← npz cache
@@ -349,7 +373,7 @@ This README + the GitHub repo is the deliverable. To deploy:
 │   ├── audit/                         ← audit_report.json
 │   ├── figures/                       ← dataset visualisations
 │   └── dataset_summary.json
-└── tests/                             ← pytest, 11 tests, all green on CPU
+└── tests/                             ← pytest, 15 tests, all green on CPU
 ```
 
 ## Quickstart
@@ -387,17 +411,21 @@ PYTHONPATH=src python3 scripts/audit.py
 
 ```
 $ PYTHONPATH=src python3 -m pytest tests/ -q
-...........                                                      [100%]
-11 passed in ~25s
+...............                                                      [100%]
+15 passed in ~30s
 ```
 
-11 tests cover:
+15 tests cover:
 * Model shapes (MobileNetV2, ResNet18, StemporalCNN) on synthetic input.
 * Dataloader contract (frames dtype/shape, mask, label).
 * Training round-trip on synthetic data.
 * Checkpoint save/load (FrameCNN + StemporalCNN).
 * Loader dispatch detects the right class from the state-dict layout.
 * Augmentation wrapper preserves shape/dtype.
+* **End-to-end API** (`tests/test_e2e_api.py`): boots the real
+  FastAPI app in-process with the phase-4 checkpoint, hits `/health`,
+  `/classes`, `/predict`, `/predict_frames` with synthetic data, and
+  asserts the response shape the UI relies on.
 
 ## License
 
@@ -410,11 +438,21 @@ $ PYTHONPATH=src python3 -m pytest tests/ -q
   reported here are for **pipeline completeness**, not recognition
   performance. A full INCLUDE run is a single `download_include.sh`
   invocation plus a re-train, given enough disk.
+* This is **isolated sign recognition**, not continuous SLT. The model
+  classifies one ~1.6 s clip at a time. The "Translation" panel is a
+  space-joined list of recognised words — a real sentence model would
+  need an additional sequence decoder (CTC / transformer head) on top
+  of the same backbone, which is not in this build.
 * No signer-independent numbers (INCLUDE doesn't expose per-clip signer
   IDs in the public CSVs).
 * No transformer / 3D-CNN comparison — those are future work and are not
   in scope of this build.
 * The webcam + TTS stack is **macOS-friendly only** — `cv2.VideoCapture`
-  for the camera, `say` for TTS. Both are silent no-ops on other
-  platforms. Swapping to another TTS engine is a single function call
-  in `src/isl_bridge/tts.py`.
+  for the camera, the browser's `speechSynthesis` for TTS. Swapping to
+  another TTS engine is a single function call (`speak()` in the UI).
+* CPU-only GRU inference: ~3–4 s per 16-frame window. A GPU would drop
+  this to sub-second; the UI's 2.5 s tick rate is matched to the
+  CPU ceiling.
+* The MediaPipe Pose + HandLandmarker models are fetched from the
+  jsDelivr / Google Storage CDNs on first use. If the demo machine is
+  offline, the box overlay silently turns off and the rest still works.
