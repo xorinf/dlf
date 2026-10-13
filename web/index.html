@@ -189,7 +189,7 @@
       <button class="sample-clip-btn" data-class="exmonsoon" type="button" disabled>Loading…</button>
     </div>
     <div class="row" style="margin-top: 12px; align-items: flex-start;">
-      <video id="sampleVideo" controls muted style="max-width: 360px; max-height: 270px; border: 1px solid var(--line); background: #000;"></video>
+      <video id="sampleVideo" controls muted playsinline preload="metadata" style="max-width: 360px; max-height: 270px; border: 1px solid var(--line); background: #000;"></video>
     </div>
   </section>
 
@@ -768,12 +768,17 @@ async function playSampleClip(cls) {
   }
   if (myToken !== sample.clickToken) return;  // a newer click took over
 
-  // Set the video src from a blob URL (no second fetch).
+  // Set the video src from a blob URL (no second fetch). We don't try to
+  // autoplay: blob-URL autoplay is gated in some browsers, and the user
+  // already *just* clicked a button, so they can click the video's own
+  // play control. The prediction runs in parallel — by the time the user
+  // presses play, the prediction panel is already populated.
   const v = $("#sampleVideo");
   if (v.src && v.src.startsWith("blob:")) URL.revokeObjectURL(v.src);
   const url = URL.createObjectURL(blob);
   v.src = url;
-  try { await v.play(); } catch (_) { /* user can click play manually */ }
+  v.load();
+  log(`loaded ${cls} sample (${(blob.size/1024/1024).toFixed(1)} MB) — click the video to play`);
   if (myToken !== sample.clickToken) {
     URL.revokeObjectURL(url);
     return;
