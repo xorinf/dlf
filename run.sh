@@ -153,6 +153,12 @@ API_PID=$!
 PIDS+=("$API_PID")
 ok "api pid      : $API_PID"
 
+# Tail child output from the start so any startup error is visible even if
+# the wait-loop later fails.
+tail -n +1 -F "$LOG_DIR/api.out" > >(tee -a "$LOG_FILE") 2>&1 &
+TAIL_PID=$!
+PIDS+=("$TAIL_PID")
+
 # ---- wait for API to come up -----------------------------------------------
 note "waiting for API health..."
 ready=0
@@ -177,6 +183,12 @@ note "starting web server..."
 WEB_PID=$!
 PIDS+=("$WEB_PID")
 ok "web pid      : $WEB_PID"
+
+# Fold the web server's output into the same tail stream so the user sees
+# both sets of logs interleaved.
+tail -n +1 -F "$LOG_DIR/web.out" > >(tee -a "$LOG_FILE") 2>&1 &
+WEB_TAIL_PID=$!
+PIDS+=("$WEB_TAIL_PID")
 
 sleep 0.5
 if ! kill -0 "$WEB_PID" 2>/dev/null; then
@@ -213,9 +225,8 @@ $(ok "ready.")
 
 EOF
 
-# Tail child output. Cleanup is on trap, so just wait.
-tail -n +1 -F "$LOG_DIR/api.out" "$LOG_DIR/web.out" &
-TAIL_PID=$!
-PIDS+=("$TAIL_PID")
-wait "$API_PID" || warn "API exited non-zero."
-cleanup
+wait "$API_PID"
+api_rc=$?
+[[ "$api_rc" -ne 0 ]] && warn "API exited with code $api_rc."
+exit $api_rc
+# cleanup() runs via the EXIT trap set up at the top.

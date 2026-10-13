@@ -114,3 +114,74 @@ def test_predict_video_synthetic(client):
     assert r.status_code == 200, r.text
     d = r.json()
     assert "prediction" in d and "top_k" in d and len(d["top_k"]) >= 1
+
+
+# --- negative paths: lock the error contract the UI relies on ----------------
+
+def test_predict_empty_file_is_400(client):
+    r = client.post("/predict?top_k=3", files={"file": ("empty.mp4", io.BytesIO(b""), "video/mp4")})
+    assert r.status_code == 400
+    assert "empty" in r.json().get("detail", "").lower()
+
+
+def test_predict_bad_mime_is_415(client):
+    r = client.post("/predict?top_k=3", files={"file": ("x.txt", io.BytesIO(b"hi"), "text/plain")})
+    assert r.status_code == 415
+
+
+def test_predict_corrupt_video_is_400(client):
+    # Valid mime, garbage bytes — cv2 fails to decode, should be 400 not 500.
+    r = client.post(
+        "/predict?top_k=3",
+        files={"file": ("junk.mp4", io.BytesIO(b"NOTAVALIDMP4" * 100), "video/mp4")},
+    )
+    assert r.status_code == 400
+    assert "decode" in r.json().get("detail", "").lower()
+
+
+def test_predict_frames_too_few_is_400(client):
+    files = [
+        ("files", (f"f{i:02d}.jpg", io.BytesIO(b"\xff\xd8\xff\xe0junk"), "image/jpeg"))
+        for i in range(3)
+    ]
+    r = client.post("/predict_frames?top_k=3", files=files)
+    assert r.status_code == 400
+    assert "8" in r.json().get("detail", "")
+
+
+def test_predict_frames_garbage_frame_is_400(client):
+    files = [
+        ("files", (f"f{i:02d}.jpg", io.BytesIO(b"NOTAJPEG" * 20), "image/jpeg"))
+        for i in range(16)
+    ]
+    r = client.post("/predict_frames?top_k=3", files=files)
+    assert r.status_code == 400
+    assert "decode" in r.json().get("detail", "").lower()
+
+
+def test_predict_frames_topk_capped(client):
+    """top_k=10000 on a 2-class model must not crash and must not return
+    more entries than classes."""
+    rng = np.random.default_rng(2)
+    files = []
+    for i in range(16):
+        img = (rng.random((240, 320, 3)) * 255).astype(np.uint8)
+        ok, buf = cv2.imencode(".jpg", img)
+        files.append(("files", (f"f{i:03d}.jpg", io.BytesIO(buf.tobytes()), "image/jpeg")))
+    r = client.post("/predict_frames?top_k=10000&abstain_threshold=0", files=files)
+    assert r.status_code == 200
+    d = r.json()
+    # top_k length must equal the model's class count (phase-4 real_run = 2).
+    # A request for top_k=10000 must not return more than we have classes for.
+    assert 1 <= len(d["top_k"]) <= 2
+    assert d["top1_confidence"] > 0
+
+
+def test_classes_persists_during_lifecycle(client):
+    r = client.get("/classes")
+    assert r.status_code == 200
+    classes = r.json()["classes"]
+    # Every key is an int-as-string, every value is a non-empty string.
+    for k, v in classes.items():
+        assert k.isdigit() or (k.lstrip("-").isdigit())
+        assert v

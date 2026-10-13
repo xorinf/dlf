@@ -47,6 +47,11 @@ log = logging.getLogger("isl_bridge.api")
 
 _STATE: dict[str, Any] = {}
 
+# ponytail: per-process max upload. ~64MB — generous for a short ISL clip,
+# rejects the obvious abuse case (gigabytes of arbitrary bytes) before they
+# hit RAM. Bump if the teacher demos 4K sources.
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -83,8 +88,13 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
+    if "model" not in _STATE or "idx_to_class" not in _STATE:
+        # Lifespan didn't run or the model load raised. Surface a real 503 so
+        # the UI's status bar reads "API offline" instead of lying.
+        raise HTTPException(status_code=503, detail="model not loaded")
     return {"status": "ok",
-            "classes": sorted(_STATE.get("idx_to_class", {}).values())}
+            "classes": sorted(_STATE["idx_to_class"].values()),
+            "model": _STATE["model"].__class__.__name__}
 
 
 @app.get("/classes")
@@ -106,11 +116,21 @@ async def predict(file: UploadFile = File(...), top_k: int = 5,
         suffix = ".webm"
     else:
         suffix = ".mp4"
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty upload")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"upload too large ({len(raw)} > {MAX_UPLOAD_BYTES})")
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fp:
-        fp.write(await file.read())
+        fp.write(raw)
         tmp = Path(fp.name)
     try:
-        x, mask = _prep_video(tmp)
+        try:
+            x, mask = _prep_video(tmp)
+        except RuntimeError as e:
+            # _prep_video raises when cv2 can't decode — most common path for
+            # a bad .mov. Surface as 400, not 500.
+            raise HTTPException(status_code=400, detail=f"decode failed: {e}")
         return _predict_tensor(x, top_k=top_k, abstain_threshold=abstain_threshold)
     finally:
         tmp.unlink(missing_ok=True)
@@ -132,14 +152,25 @@ async def predict_frames(
         raise HTTPException(status_code=503, detail="model not loaded")
     if len(files) < 8:
         raise HTTPException(status_code=400, detail=f"need >=8 frames, got {len(files)}")
-    # Decode each JPEG -> BGR uint8.
+    # Decode each JPEG -> BGR uint8. Cap total bytes early.
     bgrs: list[np.ndarray] = []
+    total = 0
     for f in files:
         data = await f.read()
+        total += len(data)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"upload too large (>{MAX_UPLOAD_BYTES})")
+        if not data:
+            raise HTTPException(status_code=400, detail=f"empty frame: {f.filename}")
         arr = np.frombuffer(data, dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
             raise HTTPException(status_code=400, detail=f"could not decode frame {f.filename}")
+        if img.size == 0 or img.shape[0] == 0 or img.shape[1] == 0:
+            # Defensive: cv2.imdecode can return a 0x0 ndarray on malformed
+            # input that the None check above didn't catch. s = SIZE/max(h,w)
+            # would divide by zero.
+            raise HTTPException(status_code=400, detail=f"empty image: {f.filename}")
         bgrs.append(img)
     # Build (1, T, 3, H, W) tensor with the same resize + normalise as /predict.
     from isl_bridge.preprocess import DEFAULT_FRAMES, DEFAULT_SIZE
@@ -154,7 +185,10 @@ async def predict_frames(
     rgb = np.stack([b[:, :, ::-1] for b in bgrs], axis=0)            # (T,H,W,3) RGB
     # Resize-aspect-pad to DEFAULT_SIZE (matches _resize_keep_aspect).
     h, w = rgb.shape[1], rgb.shape[2]
-    s = DEFAULT_SIZE / max(h, w)
+    scale_denom = max(h, w)
+    if scale_denom == 0:
+        raise HTTPException(status_code=400, detail="all frames are 0x0")
+    s = DEFAULT_SIZE / scale_denom
     new_w, new_h = int(round(w * s)), int(round(h * s))
     out = np.zeros((n_frames, DEFAULT_SIZE, DEFAULT_SIZE, 3), dtype=rgb.dtype)
     for i in range(n_frames):
@@ -176,9 +210,15 @@ async def sample_predict(top_k: int = 5, abstain_threshold: float = 0.0) -> JSON
     user picking a file."""
     if "model" not in _STATE:
         raise HTTPException(status_code=503, detail="model not loaded")
-    test_files = sorted((Path("data/processed/test")).rglob("*.npz"))
+    # Resolve test-dir relative to the repo root, not the current CWD, so
+    # `python -m uvicorn` from anywhere still finds the cache.
+    test_dir = ROOT / "data" / "processed" / "test"
+    if not test_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"no test cache at {test_dir}; "
+                                "run the include-style prep first")
+    test_files = sorted(test_dir.rglob("*.npz"))
     if not test_files:
-        raise HTTPException(status_code=404, detail="no test clips on disk; "
+        raise HTTPException(status_code=404, detail="no test npz files on disk; "
                                 "run the include-style prep first")
     from isl_bridge.infer import _prep_npz
     x, mask = _prep_npz(test_files[0])
@@ -187,12 +227,19 @@ async def sample_predict(top_k: int = 5, abstain_threshold: float = 0.0) -> JSON
 
 def _predict_tensor(x: torch.Tensor, mask: torch.Tensor | None = None,
                     *, top_k: int, abstain_threshold: float) -> JSONResponse:
-    """Shared post-processor used by both /predict and /sample_predict."""
+    """Shared post-processor used by /predict, /sample_predict, /predict_frames."""
+    # Cap top_k so a malicious / curious client can't ask for top_k=10000.
+    n_classes = _STATE["model"].cfg.num_classes if hasattr(_STATE["model"], "cfg") \
+        else len(_STATE["idx_to_class"])
+    top_k = max(1, min(int(top_k), int(n_classes)))
     with torch.no_grad():
         if mask is None:
             mask = torch.ones(x.shape[:2], dtype=torch.uint8)
         logits = _STATE["model"](x, mask)
         probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+    if probs.size == 0:
+        return JSONResponse({"prediction": "n/a", "top1_confidence": 0.0,
+                             "top_k": []})
     order = np.argsort(probs)[::-1][:top_k]
     top_k_list = [{"class": _STATE["idx_to_class"].get(int(i), str(int(i))),
                    "confidence": round(float(probs[i]), 4)} for i in order]

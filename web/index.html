@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>ISL-Bridge — Demo</title>
+<!-- Override the API base URL by editing this meta tag (or by setting
+     window.__ISL_API__ before this script runs). Default is 127.0.0.1:5050. -->
+<meta name="isl-api" content="http://127.0.0.1:5050" />
 <!-- MediaPipe Tasks (vision) for the person + hand landmark box. CDN-only,
      no install. ~3MB wasm + model. We don't ship the model — fetched on
      first use; the page still works without it, just no box overlay. -->
@@ -229,16 +232,31 @@
 
 <script>
 "use strict";
+// --- Global error handler: a single typo at top of this script would
+// otherwise kill the whole UI silently. Surface everything to the log.
+window.addEventListener("error", (e) => {
+  try { log(`JS error: ${e.message} (${e.filename}:${e.lineno})`); } catch (_) {}
+});
+window.addEventListener("unhandledrejection", (e) => {
+  try { log(`promise rejected: ${e.reason && (e.reason.message || e.reason)}`); } catch (_) {}
+});
+
 const $ = (s, r=document) => r.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const log = (m) => { const el = $("#log"); el.textContent += `[${new Date().toLocaleTimeString()}] ${m}\n`; el.scrollTop = el.scrollHeight; };
 
+// ponytail: API port is fixed (5050) regardless of which port the web UI is
+// served on. The previous logic pointed the API at the same host:port as the
+// page, which silently broke the moment the user changed WEB_PORT or API_PORT
+// independently. Override via a <meta name="isl-api" content="..."> tag, or
+// set window.__ISL_API__ before this script runs.
+const META_API = document.querySelector('meta[name="isl-api"]');
 const state = {
   file: null, topK: 3, abstain: 0.60,
   emitThresh: 0.60, emitCooldownMs: 1500,
-  api: (location.protocol === "file:" || location.hostname === "")
-    ? "http://127.0.0.1:5050"
-    : `${location.protocol}//${location.host}`,
+  api: (META_API && META_API.content)
+    || (typeof window.__ISL_API__ === "string" ? window.__ISL_API__ : null)
+    || "http://127.0.0.1:5050",
   classes: [],
 };
 
@@ -300,8 +318,28 @@ async function startCamera() {
     log(`camera permission denied: ${e.message}`);
     return;
   }
+  // Defensive: some cameras / privacy settings give a stream with no video
+  // track. Bail with a clear message instead of letting the rVFC loop
+  // silently do nothing.
+  if (!cam.stream.getVideoTracks().length) {
+    log("getUserMedia returned a stream with no video track; bailing.");
+    for (const t of cam.stream.getTracks()) t.stop();
+    cam.stream = null;
+    return;
+  }
   cam.video.srcObject = cam.stream;
-  await cam.video.play().catch(() => {});
+  await cam.video.play().catch((e) => log(`video.play rejected: ${e.message}`));
+  // Wait for metadata (width/height) to be available before kicking off
+  // rVFC, otherwise the first frame draw may hit a 0x0 video element and
+  // throw InvalidStateError.
+  if (cam.video.readyState < 2) {
+    await new Promise((resolve) => {
+      const onMeta = () => { cam.video.removeEventListener("loadedmetadata", onMeta); resolve(); };
+      cam.video.addEventListener("loadedmetadata", onMeta, { once: true });
+      // Safety net: don't wait forever.
+      setTimeout(resolve, 2000);
+    });
+  }
   cam.frames = [];
   $("#btnCamStart").disabled = true;
   $("#btnCamStop").disabled = false;
@@ -341,13 +379,23 @@ function resizeOverlay() {
 }
 
 function captureAndDetect() {
+  // Defensive: readyState < 2 means the video element has no frame data yet.
+  // Drawing from it throws InvalidStateError; skip the tick.
+  if (!cam.video || cam.video.readyState < 2 || !cam.video.videoWidth) {
+    return;
+  }
   const w = cam.drawCanvas.width, h = cam.drawCanvas.height;
   // The capture frame is the same one we use for prediction (smaller,
   // 320x240) so the JPEG size is sane.
   const cap = document.createElement("canvas");
   cap.width = 320; cap.height = 240;
   const capCtx = cap.getContext("2d");
-  capCtx.drawImage(cam.video, 0, 0, cap.width, cap.height);
+  try {
+    capCtx.drawImage(cam.video, 0, 0, cap.width, cap.height);
+  } catch (e) {
+    log(`captureAndDetect: drawImage failed: ${e.message}`);
+    return;
+  }
   cap.toBlob((blob) => {
     if (!blob) return;
     cam.frames.push(blob);
@@ -553,9 +601,12 @@ async function predictTick() {
 function onPrediction(d) {
   renderHud(d);
   // Save the latest label so drawLandmarks (next rVFC tick) can put it on
-  // the box.
-  if (d && d.top_k && d.top_k[0]) {
-    cam.lastBoxLabel = { word: d.prediction || d.top_k[0].class, conf: d.top1_confidence };
+  // the box. Defensive: the server may return a partial response during
+  // an aborted inference.
+  const top1 = d && d.top_k && d.top_k[0];
+  const conf = d && Number.isFinite(d.top1_confidence) ? d.top1_confidence : null;
+  if (top1 && conf !== null) {
+    cam.lastBoxLabel = { word: d.prediction || top1.class, conf };
   } else {
     cam.lastBoxLabel = null;
   }
@@ -569,17 +620,17 @@ function renderHud(d) {
     return;
   }
   const top1 = d.top_k && d.top_k[0];
-  if (!top1) return;
+  if (!top1) { wordEl.textContent = "—"; confEl.textContent = "no prediction"; return; }
   const w = d.prediction || top1.class;
-  const c = d.top1_confidence;
+  const c = Number.isFinite(d.top1_confidence) ? d.top1_confidence : 0;
   wordEl.textContent = w;
   confEl.textContent = `conf ${c.toFixed(2)} · ${new Date().toLocaleTimeString()}`;
   barEl.style.width = `${Math.max(0, Math.min(100, c * 100)).toFixed(0)}%`;
 }
 
 function maybeEmit(d) {
-  const top1 = d.top_k && d.top_k[0];
-  if (!top1) return;
+  const top1 = d && d.top_k && d.top_k[0];
+  if (!top1 || !Number.isFinite(d.top1_confidence)) return;
   const now = Date.now();
   const c = d.top1_confidence;
   const w = d.prediction || top1.class;
@@ -708,14 +759,18 @@ $("#btnPredict").addEventListener("click", async () => {
 // --- Result rendering --------------------------------------------------------
 function renderResult(d) {
   $("#resultPanel").hidden = false;
-  const p = d.prediction;
+  const p = d.prediction || "n/a";
+  const conf = Number.isFinite(d.top1_confidence) ? d.top1_confidence : 0;
   const uncertain = p === "uncertain";
-  $("#prediction").innerHTML = `<span class="lbl">Prediction</span><b>${esc(p)}</b> &nbsp; <span class="sub">conf <b>${d.top1_confidence.toFixed(3)}</b>${uncertain ? ` (below ${state.abstain.toFixed(2)} — abstained)` : ""}</span>`;
-  const max = Math.max(...d.top_k.map(x => x.confidence)) || 1;
-  $("#topKList").innerHTML = "<span class='lbl'>Top-k</span>" + d.top_k.map(x => {
-    const w = Math.round(60 * x.confidence / max);
-    return `<div><span class="bar" style="width:${w}px"></span><b>${esc(x.class)}</b> &nbsp; ${x.confidence.toFixed(3)}</div>`;
-  }).join("");
+  $("#prediction").innerHTML = `<span class="lbl">Prediction</span><b>${esc(p)}</b> &nbsp; <span class="sub">conf <b>${conf.toFixed(3)}</b>${uncertain ? ` (below ${state.abstain.toFixed(2)} — abstained)` : ""}</span>`;
+  const topk = Array.isArray(d.top_k) && d.top_k.length ? d.top_k : [];
+  const max = topk.length ? Math.max(...topk.map(x => x.confidence || 0)) : 1;
+  $("#topKList").innerHTML = topk.length
+    ? "<span class='lbl'>Top-k</span>" + topk.map(x => {
+        const w = Math.round(60 * (x.confidence || 0) / max);
+        return `<div><span class="bar" style="width:${w}px"></span><b>${esc(x.class || "?")}</b> &nbsp; ${(x.confidence || 0).toFixed(3)}</div>`;
+      }).join("")
+    : "<span class='lbl'>Top-k</span> (none)";
 }
 
 $("#btnSpeak").addEventListener("click", () => {
