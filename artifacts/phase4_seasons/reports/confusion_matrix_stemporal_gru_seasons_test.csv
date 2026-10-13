@@ -1,0 +1,7 @@
+true\pred,exmonsoon,fall,season,spring,summer,winter
+exmonsoon,2,0,0,0,0,1
+fall,0,1,0,0,0,2
+season,0,1,0,0,0,1
+spring,0,2,0,0,0,0
+summer,0,3,0,0,0,0
+winter,0,2,0,0,0,0

@@ -35,8 +35,8 @@ The UI:
 
 | What                                          | Where                                                                  | Status                                |
 |-----------------------------------------------|------------------------------------------------------------------------|---------------------------------------|
-| A trained model checkpoint                    | `artifacts/phase3_real_run/best.pt`, `artifacts/phase4_real_run/best.pt` | trained, real data                     |
-| A confusion matrix PNG                        | `artifacts/phase3_real_run/confusion_matrix.png`, `…/phase4_real_run/…` | generated from real data              |
+| A trained model checkpoint                    | `artifacts/phase3_real_run/best.pt`, `artifacts/phase4_real_run/best.pt`, `artifacts/phase4_seasons/best.pt` | trained, real data (phase3/phase4: 2 classes, phase4_seasons: 6 classes) |
+| A confusion matrix PNG                        | `artifacts/phase3_real_run/confusion_matrix.png`, `…/phase4_real_run/…`, `…/phase4_seasons/…` | generated from real data              |
 | A sample-frames figure                        | `artifacts/figures/sample_frames.png`                                  | one frame per class from real videos  |
 | A per-class histogram                         | `artifacts/figures/class_histogram.png`                                | shows the 2-class on-disk reality     |
 | Per-epoch training history                    | `artifacts/phase3_real_run/history.json`, `…/phase4_real_run/…`        | 4 epochs each                         |
@@ -171,6 +171,49 @@ on this 4-clip test). That's honest for a 4-clip test: 2/4 = 0.5.
 > (50 classes, ~958 clips) it would be the model we'd actually benchmark.
 > The Phase-9 evaluation section below lays out what a Phase-9 honest
 > comparison looks like.
+
+### Phase 4b — Seasons 6-class working set
+
+The Seasons_1of1 archive on disk has 66 videos across **6 classes**
+(Fall, Summer, Spring, Winter, Season, Ex. Monsoon). The 50-class INCLUDE
+manifest only knows about 2 of them, so a new pipeline (cache + trainer
++ figures) was added that uses the 263-class INCLUDE manifest:
+
+```
+$ PYTHONPATH=src python3 scripts/build_seasons_cache.py   # 66 clips -> data/processed_seasons/
+$ PYTHONPATH=src python3 scripts/train_seasons.py --epochs 10
+{"epoch": 0, "train_loss": 2.1353, "train_acc": 0.1702, ...}
+...
+{"test_acc": 0.2, "macro_f1": 0.1611, "n_test": 15, "classes": 6}
+```
+
+Real numbers on the 15-clip test set (47 train / 4 val / 15 test):
+
+```json
+{
+  "stats": {"n_train": 47, "n_val": 4, "n_test": 15, "n_classes": 6,
+            "class_names": ["exmonsoon","fall","season","spring","summer","winter"]},
+  "metrics": {"macro_precision": 0.1852, "macro_recall": 0.1667,
+              "macro_f1": 0.1611, "accuracy": 0.2, "n_eval": 15}
+}
+```
+
+`run.sh` picks `artifacts/phase4_seasons/best.pt` by default when it
+exists, falling back to the 2-class `phase4_real_run` checkpoint. The
+UI displays the live checkpoint + class count in "What the model knows"
+via the new `GET /model_info` endpoint.
+
+![seasons histogram](artifacts/figures/seasons_class_histogram.png)
+![seasons sample frames](artifacts/figures/seasons_sample_frames.png)
+![seasons training curve](artifacts/phase4_seasons/training_curve.png)
+
+Honest read: 47 training samples across 6 classes is **8 per class** — a
+floor, not a benchmark. The model collapses onto the most visually
+distinct class (Ex. Monsoon F1 = 0.80) and under-predicts the others,
+which is the textbook behaviour of an under-parameterised-by-data
+classifier. To push these numbers up: download more Seasons-style
+archives (`bash scripts/download_include.sh --categories Seasons`),
+or train on the full INCLUDE-50 set.
 
 ### Phase 5 — Augmentation
 

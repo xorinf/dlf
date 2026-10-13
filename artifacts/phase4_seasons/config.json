@@ -1,0 +1,17 @@
+{
+  "model_config": {
+    "backbone": "mobilenet_v2",
+    "num_classes": 6,
+    "pretrained": true,
+    "freeze_backbone": true,
+    "dropout": 0.2
+  },
+  "lr": 0.001,
+  "batch_size": 4,
+  "epochs": 10,
+  "seed": 0,
+  "device": "cpu",
+  "elapsed_sec": 2512.82,
+  "gru_hidden": 128,
+  "proc_dir": "data/processed_seasons"
+}
