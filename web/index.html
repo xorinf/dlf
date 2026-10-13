@@ -71,6 +71,20 @@
   </header>
 
   <section class="panel">
+    <h2>Webcam</h2>
+    <div class="row">
+      <button id="btnCamStart" type="button">Start camera</button>
+      <button id="btnCamRecord" type="button" disabled>Record (1.6s)</button>
+      <button id="btnCamStop" type="button" disabled>Stop camera</button>
+      <span class="sub" id="camStatus">Camera off</span>
+    </div>
+    <div class="row" style="margin-top: 12px;">
+      <video id="camVideo" autoplay playsinline muted style="max-width: 320px; border: 1px solid var(--line); background: #000;"></video>
+    </div>
+    <p class="sub">Browser will ask for camera permission. Recordings are sent straight to the model server, never stored.</p>
+  </section>
+
+  <section class="panel">
     <h2>Pick a video</h2>
     <div class="row">
       <label class="file" for="fileInput">Choose video…</label>
@@ -156,6 +170,116 @@ async function refreshHealth() {
     log(`health failed: ${e.message}`);
   }
 }
+
+// --- Webcam capture ---------------------------------------------------------
+// ponytail: MediaRecorder over canvas stream. Picks a mime the browser
+// supports, falls back to webm/vp8. Clip is 1.6s — model expects 32 frames at
+// ~20fps. We sample the stream into a canvas, not the raw webcam frame, so
+// later colour-jitter / square crop can be inserted if needed.
+const cam = { stream: null, recorder: null, chunks: [], recording: false };
+
+const REC_MS = 1600;
+
+function pickMime() {
+  const opts = [
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+    "video/mp4",
+  ];
+  for (const m of opts) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";
+}
+
+async function startCamera() {
+  if (cam.stream) return;
+  const v = $("#camVideo");
+  try {
+    cam.stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 }, audio: false,
+    });
+  } catch (e) {
+    log(`camera permission denied: ${e.message}`);
+    $("#camStatus").textContent = "Permission denied";
+    return;
+  }
+  v.srcObject = cam.stream;
+  $("#btnCamStart").disabled = true;
+  $("#btnCamRecord").disabled = false;
+  $("#btnCamStop").disabled = false;
+  $("#camStatus").textContent = "Camera on";
+  log("camera started");
+}
+
+function stopCamera() {
+  if (cam.recorder && cam.recorder.state !== "inactive") {
+    try { cam.recorder.stop(); } catch {}
+  }
+  if (cam.stream) {
+    for (const t of cam.stream.getTracks()) t.stop();
+    cam.stream = null;
+  }
+  $("#camVideo").srcObject = null;
+  $("#btnCamStart").disabled = false;
+  $("#btnCamRecord").disabled = true;
+  $("#btnCamStop").disabled = true;
+  $("#camStatus").textContent = "Camera off";
+  log("camera stopped");
+}
+
+function recordOnce() {
+  if (!cam.stream || cam.recording) return;
+  const mime = pickMime();
+  if (!mime) {
+    log("MediaRecorder unsupported in this browser");
+    return;
+  }
+  cam.chunks = [];
+  cam.recorder = new MediaRecorder(cam.stream, { mimeType: mime });
+  cam.recorder.ondataavailable = (e) => { if (e.data && e.data.size) cam.chunks.push(e.data); };
+  cam.recorder.onstop = () => {
+    cam.recording = false;
+    const type = cam.recorder.mimeType || mime;
+    const blob = new Blob(cam.chunks, { type });
+    log(`recorded ${(blob.size / 1024).toFixed(1)} KB (${type})`);
+    predictBlob(blob, `webcam.${type.includes("mp4") ? "mp4" : "webm"}`);
+  };
+  cam.recording = true;
+  $("#btnCamRecord").disabled = true;
+  $("#camStatus").textContent = "Recording…";
+  log("recording " + (REC_MS / 1000) + "s…");
+  cam.recorder.start();
+  setTimeout(() => { try { cam.recorder.stop(); } catch {} }, REC_MS);
+}
+
+async function predictBlob(blob, filename) {
+  const fd = new FormData();
+  fd.append("file", blob, filename);
+  log(`predicting ${filename} (${(blob.size / 1024).toFixed(1)} KB)…`);
+  try {
+    const r = await fetch(
+      `${state.api}/predict?top_k=${state.topK}&abstain_threshold=${state.abstain}`,
+      { method: "POST", body: fd },
+    );
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`HTTP ${r.status} — ${t.slice(0, 200)}`);
+    }
+    const d = await r.json();
+    log(`prediction: ${d.prediction} (conf ${d.top1_confidence.toFixed(3)})`);
+    renderResult(d);
+  } catch (e) {
+    log(`predict failed: ${e.message}`);
+  } finally {
+    $("#btnCamRecord").disabled = !cam.stream;
+  }
+}
+
+$("#btnCamStart").addEventListener("click", startCamera);
+$("#btnCamStop").addEventListener("click", stopCamera);
+$("#btnCamRecord").addEventListener("click", recordOnce);
 
 // --- File handling -----------------------------------------------------------
 $("#fileInput").addEventListener("change", (e) => {

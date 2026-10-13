@@ -33,6 +33,7 @@ from typing import Any
 import numpy as np
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,22 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="ISL-Bridge API", version="0.1", lifespan=_lifespan)
 
+# ponytail: open CORS only for localhost/127.0.0.1 on any port — same-machine
+#            demo. Tighten to an allow-list before any deploy beyond this Mac.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost", "http://127.0.0.1",
+        "http://localhost:8000", "http://127.0.0.1:8000",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:3000", "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/health")
 def health() -> dict:
@@ -79,9 +96,15 @@ async def predict(file: UploadFile = File(...), top_k: int = 5,
                   abstain_threshold: float = 0.0) -> JSONResponse:
     if "model" not in _STATE:
         raise HTTPException(status_code=503, detail="model not loaded")
-    if file.content_type not in ("video/mp4", "video/quicktime", "application/octet-stream"):
+    if file.content_type not in ("video/mp4", "video/quicktime", "video/webm",
+                                   "application/octet-stream"):
         raise HTTPException(status_code=415, detail=f"unsupported content-type {file.content_type}")
-    suffix = ".MOV" if file.content_type == "video/quicktime" else ".mp4"
+    if file.content_type == "video/quicktime":
+        suffix = ".MOV"
+    elif file.content_type == "video/webm":
+        suffix = ".webm"
+    else:
+        suffix = ".mp4"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fp:
         fp.write(await file.read())
         tmp = Path(fp.name)
