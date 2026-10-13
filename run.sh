@@ -33,7 +33,23 @@ set -eu
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-CHECKPOINT="${CHECKPOINT:-artifacts/phase4_real_run/best.pt}"
+CHECKPOINT="${CHECKPOINT:-}"
+# ponytail: prefer the 6-class Seasons checkpoint if it exists (the latest
+# trainer's output). Fall back to the 2-class Phase-4 working subset, which
+# is the historical default. Order: newest > oldest.
+if [[ -z "$CHECKPOINT" ]]; then
+  for cand in \
+      artifacts/phase4_seasons/best.pt \
+      artifacts/phase4_real_run/best.pt \
+      artifacts/phase3_real_run/best.pt
+  do
+    if [[ -f "$cand" ]]; then
+      CHECKPOINT="$cand"
+      break
+    fi
+  done
+fi
+[[ -n "$CHECKPOINT" ]] || die "no checkpoint found in artifacts/ — train one first"
 API_HOST="${API_HOST:-${HOST:-127.0.0.1}}"
 WEB_HOST="${WEB_HOST:-${HOST:-127.0.0.1}}"
 API_PORT="${PORT:-5050}"

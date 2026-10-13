@@ -57,6 +57,18 @@ def test_health(client):
     d = r.json()
     assert d["status"] == "ok"
     assert "classes" in d and len(d["classes"]) >= 1
+    assert d["n_classes"] >= 1
+
+
+def test_model_info(client):
+    r = client.get("/model_info")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["model_class"] in ("FrameCNN", "StemporalCNN")
+    assert d["n_classes"] == len(d["classes"])
+    assert d["n_classes"] >= 1
+    # checkpoint path is recorded for UI display.
+    assert isinstance(d["checkpoint"], str) and d["checkpoint"]
 
 
 def test_classes(client):

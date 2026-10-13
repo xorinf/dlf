@@ -94,7 +94,21 @@ def health() -> dict:
         raise HTTPException(status_code=503, detail="model not loaded")
     return {"status": "ok",
             "classes": sorted(_STATE["idx_to_class"].values()),
-            "model": _STATE["model"].__class__.__name__}
+            "model": _STATE["model"].__class__.__name__,
+            "n_classes": len(_STATE["idx_to_class"])}
+
+
+@app.get("/model_info")
+def model_info() -> dict:
+    """What the UI uses to label itself. Cheap, no inference."""
+    if "model" not in _STATE:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    return {
+        "model_class": _STATE["model"].__class__.__name__,
+        "n_classes": len(_STATE["idx_to_class"]),
+        "classes": _STATE["idx_to_class"],
+        "checkpoint": _STATE.get("checkpoint", "unknown"),
+    }
 
 
 @app.get("/classes")

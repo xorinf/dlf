@@ -1,6 +1,7 @@
 # Datasets — do not commit
 data/raw/
 data/processed/
+data/processed_seasons/
 data/cache/
 data/Downloads/
 

@@ -206,6 +206,7 @@
     <h2>What the model knows</h2>
     <p class="sub">Classes the current checkpoint was trained on. Empty means the API isn't reachable.</p>
     <div id="classList" class="sub">—</div>
+    <p class="sub" id="modelInfo" style="margin-top: 8px;">—</p>
   </section>
 
   <section class="panel">
@@ -269,16 +270,26 @@ async function refreshHealth() {
     const r = await fetch(`${state.api}/health`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
-    status.textContent = `API live — ${d.classes.length} classes: ${d.classes.join(", ")}`;
+    const cls = d.classes || [];
+    status.textContent = `API live — ${d.n_classes ?? cls.length} classes: ${cls.join(", ")}`;
     status.classList.add("live");
-    state.classes = d.classes;
+    state.classes = cls;
     renderClasses();
-    log(`health OK — ${d.classes.length} classes`);
+    log(`health OK — ${cls.length} classes (${d.model || "model"})`);
   } catch (e) {
     status.textContent = `API offline — start it with: PYTHONPATH=src python3 scripts/api.py --host 127.0.0.1 --port 5050`;
     status.classList.remove("live");
     log(`health failed: ${e.message}`);
   }
+  // Best-effort: also pull /model_info so we can display the checkpoint path.
+  try {
+    const r = await fetch(`${state.api}/model_info`);
+    if (r.ok) {
+      const d = await r.json();
+      const el = $("#modelInfo");
+      if (el) el.textContent = `${d.model_class} · ${d.n_classes} classes · ${d.checkpoint}`;
+    }
+  } catch (_) { /* non-fatal */ }
 }
 
 // --- Live webcam: rolling-frame prediction + MediaPipe box overlay --------

@@ -105,6 +105,79 @@ def class_histogram(inv) -> None:
     print(f"Wrote {out}")
 
 
+def _seasons_rows(inv):
+    """Filter the inventory to Season rows; tolerate both '61. Summer' and
+    'Ex. Monsoon' folder shapes."""
+    out = []
+    for r in inv:
+        if not r.relpath.startswith("Seasons/"): continue
+        if not (r.exists and r.size_bytes > 0): continue
+        out.append(r)
+    return out
+
+
+def seasons_grid(inv, n_per_class: int = 3) -> None:
+    seasons = _seasons_rows(inv)
+    by_class: dict[str, list] = {}
+    for r in seasons:
+        parts = r.relpath.split("/")
+        if len(parts) < 2: continue
+        by_class.setdefault(parts[1], []).append(r)
+    chosen = sorted(by_class)
+    if not chosen:
+        print("No Seasons classes on disk — skipping seasons grid.")
+        return
+    rows, cols = len(chosen), max(1, n_per_class)
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.4, rows * 2.4),
+                             squeeze=False)
+    for i, cls in enumerate(chosen):
+        pool = by_class[cls]
+        picks = random.sample(pool, min(cols, len(pool)))
+        for j in range(cols):
+            ax = axes[i][j]
+            ax.set_xticks([]); ax.set_yticks([])
+            if j >= len(picks):
+                ax.set_facecolor("white"); continue
+            img = _sample_frame(picks[j].abs_path)
+            if img is None:
+                ax.text(0.5, 0.5, "no frame", ha="center", va="center")
+            else:
+                ax.imshow(img)
+            if j == 0:
+                ax.set_ylabel(cls, fontsize=9)
+    fig.suptitle(f"Seasons sample frames ({len(chosen)} classes, "
+                 f"{sum(len(v) for v in by_class.values())} clips)", fontsize=11)
+    fig.tight_layout()
+    out = OUT_DIR / "seasons_sample_frames.png"
+    fig.savefig(out, dpi=110)
+    print(f"Wrote {out}")
+
+
+def seasons_histogram(inv) -> None:
+    seasons = _seasons_rows(inv)
+    by_class: dict[str, int] = {}
+    for r in seasons:
+        parts = r.relpath.split("/")
+        if len(parts) < 2: continue
+        by_class[parts[1]] = by_class.get(parts[1], 0) + 1
+    if not by_class:
+        print("No Seasons classes — skipping seasons histogram.")
+        return
+    labels = sorted(by_class)
+    values = [by_class[l] for l in labels]
+    fig, ax = plt.subplots(figsize=(max(6, len(labels) * 0.5), 4))
+    ax.bar(range(len(labels)), values)
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=9)
+    ax.set_ylabel("present videos on disk")
+    ax.set_title(f"Seasons working subset — per-class counts "
+                 f"({len(labels)} classes, {sum(values)} clips)")
+    fig.tight_layout()
+    out = OUT_DIR / "seasons_class_histogram.png"
+    fig.savefig(out, dpi=110)
+    print(f"Wrote {out}")
+
+
 def duration_histogram(inv) -> None:
     """Side-effect: a quick ffprobe-driven duration distribution for honest reporting."""
     import subprocess
@@ -145,6 +218,10 @@ def main() -> None:
     sample_grid(inv)
     class_histogram(inv)
     duration_histogram(inv)
+    # Seasons-specific figures: uses the 263-class manifest so the extra
+    # classes (Spring, Winter, Season, Ex. Monsoon) show up too.
+    seasons_grid(inv)
+    seasons_histogram(inv)
 
 
 if __name__ == "__main__":
