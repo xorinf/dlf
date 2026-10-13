@@ -272,18 +272,39 @@ def sample_clips() -> dict:
 @app.get("/sample_video")
 def sample_video(cls: str):
     """Stream one Seasons clip for the given public class. Used by the
-    demo UI's one-click 'play this class' button."""
+    demo UI's one-click 'play this class' button.
+
+    ponytail: Chrome doesn't reliably play .mov files served over HTTP
+    (QuickTime container quirks + H.264-in-MOV not always supported).
+    Stream-copy the .MOV to an .mp4 on the fly with ffmpeg, cache the
+    result under .hermes/sample_cache/, and serve that instead. First
+    request is ~30ms (ffmpeg stream copy), subsequent requests are a
+    straight file read. No re-encoding, so no quality loss.
+    """
+    import subprocess
     folder = SAMPLE_CLASS_FOLDERS.get(cls)
     if not folder:
         raise HTTPException(status_code=400, detail=f"unknown class {cls!r}")
     raw = ROOT / "data" / "raw" / "include" / "Seasons" / folder
     if not raw.is_dir():
         raise HTTPException(status_code=404, detail=f"no on-disk clips for {cls}")
-    files = sorted(raw.glob("*.MOV"))
-    if not files:
+    movs = sorted(raw.glob("*.MOV"))
+    if not movs:
         raise HTTPException(status_code=404, detail=f"no .MOV files for {cls}")
-    # Default to the FIRST .MOV — deterministic so the UI can replay.
-    return FileResponse(files[0], media_type="video/quicktime")
+    src = movs[0]
+    cache_dir = ROOT / ".hermes" / "sample_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / f"{cls}_{src.stem}.mp4"
+    if not cached.exists() or cached.stat().st_mtime < src.stat().st_mtime:
+        # Stream-copy: no re-encode, fast. -movflags +faststart makes the
+        # resulting MP4 web-friendly (moov atom at the start so Chrome
+        # can start playback without downloading the whole file).
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+             "-c", "copy", "-movflags", "+faststart", str(cached)],
+            check=True,
+        )
+    return FileResponse(cached, media_type="video/mp4")
 
 
 def _predict_tensor(x: torch.Tensor, mask: torch.Tensor | None = None,
