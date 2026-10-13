@@ -35,7 +35,7 @@ import torch
 import cv2
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -237,6 +237,53 @@ async def sample_predict(top_k: int = 5, abstain_threshold: float = 0.0) -> JSON
     from isl_bridge.infer import _prep_npz
     x, mask = _prep_npz(test_files[0])
     return _predict_tensor(x, top_k=top_k, abstain_threshold=abstain_threshold)
+
+
+# Map "public" class name -> Seasons folder name on disk.
+SAMPLE_CLASS_FOLDERS = {
+    "fall": "64. Fall",
+    "summer": "61. Summer",
+    "spring": "62. Spring",
+    "winter": "63. Winter",
+    "season": "65. Season",
+    "exmonsoon": "Ex. Monsoon",
+}
+
+
+@app.get("/sample_clips")
+def sample_clips() -> dict:
+    """List the Seasons on-disk clips the demo can play through the model.
+    Each class gets up to 3 representative clips so the UI can offer
+    one-click demos without anyone having to know sign language."""
+    if "model" not in _STATE:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    out: dict[str, list[str]] = {}
+    raw = ROOT / "data" / "raw" / "include" / "Seasons"
+    for public_name, folder in SAMPLE_CLASS_FOLDERS.items():
+        d = raw / folder
+        if not d.is_dir():
+            continue
+        # Up to 3, deterministic order
+        files = sorted(p for p in d.glob("*.MOV"))[:3]
+        out[public_name] = [f.name for f in files]
+    return {"classes": out, "root": "data/raw/include/Seasons"}
+
+
+@app.get("/sample_video")
+def sample_video(cls: str):
+    """Stream one Seasons clip for the given public class. Used by the
+    demo UI's one-click 'play this class' button."""
+    folder = SAMPLE_CLASS_FOLDERS.get(cls)
+    if not folder:
+        raise HTTPException(status_code=400, detail=f"unknown class {cls!r}")
+    raw = ROOT / "data" / "raw" / "include" / "Seasons" / folder
+    if not raw.is_dir():
+        raise HTTPException(status_code=404, detail=f"no on-disk clips for {cls}")
+    files = sorted(raw.glob("*.MOV"))
+    if not files:
+        raise HTTPException(status_code=404, detail=f"no .MOV files for {cls}")
+    # Default to the FIRST .MOV — deterministic so the UI can replay.
+    return FileResponse(files[0], media_type="video/quicktime")
 
 
 def _predict_tensor(x: torch.Tensor, mask: torch.Tensor | None = None,

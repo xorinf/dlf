@@ -178,6 +178,22 @@
   </section>
 
   <section class="panel">
+    <h2>Try a real INCLUDE clip</h2>
+    <p class="sub">One-click demos. Click a class — a real Season signer video plays, the model classifies it, and the prediction shows up below. <b>No signing required.</b></p>
+    <div class="row" id="sampleClipRow">
+      <button class="sample-clip-btn" data-class="fall" type="button" disabled>Loading…</button>
+      <button class="sample-clip-btn" data-class="summer" type="button" disabled>Loading…</button>
+      <button class="sample-clip-btn" data-class="spring" type="button" disabled>Loading…</button>
+      <button class="sample-clip-btn" data-class="winter" type="button" disabled>Loading…</button>
+      <button class="sample-clip-btn" data-class="season" type="button" disabled>Loading…</button>
+      <button class="sample-clip-btn" data-class="exmonsoon" type="button" disabled>Loading…</button>
+    </div>
+    <div class="row" style="margin-top: 12px; align-items: flex-start;">
+      <video id="sampleVideo" controls muted style="max-width: 360px; max-height: 270px; border: 1px solid var(--line); background: #000;"></video>
+    </div>
+  </section>
+
+  <section class="panel">
     <h2>Pick a video</h2>
     <div class="row">
       <label class="file" for="fileInput">Choose video…</label>
@@ -683,6 +699,79 @@ function speak(text) {
 
 $("#btnCamStart").addEventListener("click", startCamera);
 $("#btnCamStop").addEventListener("click", stopCamera);
+
+// --- Sample clip player (one-click INCLUDE demos) ------------------------
+// Loads the class list from /sample_clips, plays the chosen class's first
+// .MOV, and POSTs the same file to /predict — same code path as a manual
+// upload but with zero clicks. Used for the demo when the user doesn't
+// know sign language.
+const sample = { classes: {}, busy: false };
+
+async function loadSampleClips() {
+  try {
+    const r = await fetch(`${state.api}/sample_clips`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    sample.classes = d.classes || {};
+    // Re-label buttons with file counts and enable.
+    document.querySelectorAll(".sample-clip-btn").forEach((btn) => {
+      const cls = btn.dataset.class;
+      const files = (sample.classes[cls] || []);
+      btn.disabled = files.length === 0;
+      btn.textContent = files.length
+        ? `${cls} (${files.length} clip${files.length === 1 ? "" : "s"})`
+        : `${cls} (no clips)`;
+    });
+  } catch (e) {
+    log(`sample_clips failed: ${e.message}`);
+    document.querySelectorAll(".sample-clip-btn").forEach((btn) => {
+      btn.disabled = true;
+      btn.textContent = "unavailable";
+    });
+  }
+}
+
+async function playSampleClip(cls) {
+  if (sample.busy) return;
+  sample.busy = true;
+  const v = $("#sampleVideo");
+  v.src = `${state.api}/sample_video?cls=${encodeURIComponent(cls)}&t=${Date.now()}`;
+  v.load();
+  try { await v.play(); } catch (_) { /* user can click play */ }
+  log(`playing ${cls} sample — sending to /predict`);
+  // Now POST the same file to /predict (the server will decode the .MOV
+  // through the same pipeline as a manual upload).
+  const r = await fetch(`${state.api}/sample_video?cls=${encodeURIComponent(cls)}&t=${Date.now()}`);
+  if (!r.ok) {
+    log(`predict failed: HTTP ${r.status}`);
+    sample.busy = false;
+    return;
+  }
+  const blob = await r.blob();
+  const fd = new FormData();
+  fd.append("file", blob, `${cls}_sample.MOV`);
+  try {
+    const pr = await fetch(`${state.api}/predict?top_k=${state.topK}&abstain_threshold=${state.abstain}`, {
+      method: "POST", body: fd,
+    });
+    if (!pr.ok) {
+      const t = await pr.text();
+      throw new Error(`HTTP ${pr.status} — ${t.slice(0, 120)}`);
+    }
+    const pd = await pr.json();
+    log(`sample prediction: ${pd.prediction} (conf ${pd.top1_confidence.toFixed(3)})`);
+    renderResult(pd);
+  } catch (e) {
+    log(`sample predict failed: ${e.message}`);
+  } finally {
+    sample.busy = false;
+  }
+}
+
+document.querySelectorAll(".sample-clip-btn").forEach((btn) => {
+  btn.addEventListener("click", () => playSampleClip(btn.dataset.class));
+});
+loadSampleClips();
 $("#emitThresh").addEventListener("input", (e) => {
   state.emitThresh = (+e.target.value) / 100;
   $("#emitThreshVal").textContent = state.emitThresh.toFixed(2);

@@ -71,6 +71,45 @@ def test_model_info(client):
     assert isinstance(d["checkpoint"], str) and d["checkpoint"]
 
 
+# --- /sample_clips + /sample_video --------------------------------------------
+# These need the Seasons raw videos on disk. The test uses the same data dir
+# the rest of the project does.
+
+SAMPLE_CLASSES = ("fall", "summer", "spring", "winter", "season", "exmonsoon")
+
+
+def test_sample_clips_lists_six_classes(client):
+    r = client.get("/sample_clips")
+    assert r.status_code == 200
+    d = r.json()
+    assert set(d["classes"].keys()) == set(SAMPLE_CLASSES)
+    for cls in SAMPLE_CLASSES:
+        assert isinstance(d["classes"][cls], list)
+        assert all(name.endswith(".MOV") for name in d["classes"][cls])
+        assert len(d["classes"][cls]) >= 1
+
+
+def test_sample_video_unknown_class_is_400(client):
+    r = client.get("/sample_video?cls=nope")
+    assert r.status_code == 400
+    assert "unknown" in r.json().get("detail", "").lower()
+
+
+def test_sample_video_streams_then_predict(client):
+    """End-to-end: fetch a real Seasons .MOV, POST it to /predict, expect a
+    valid top-k response. This is the exact flow the demo UI's one-click
+    sample-clip button runs."""
+    r = client.get("/sample_video?cls=fall")
+    assert r.status_code == 200
+    assert len(r.content) > 1000, "expected a real .MOV, got nothing"
+    files = {"file": ("fall.MOV", r.content, "video/quicktime")}
+    pr = client.post("/predict?top_k=3&abstain_threshold=0", files=files)
+    assert pr.status_code == 200
+    d = pr.json()
+    assert "prediction" in d and "top_k" in d
+    assert 1 <= len(d["top_k"]) <= 6
+
+
 def test_classes(client):
     r = client.get("/classes")
     assert r.status_code == 200
